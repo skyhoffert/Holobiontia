@@ -1,7 +1,8 @@
 import { createRng } from './rng.js';
 import { createTerrain, isOpen } from './terrain.js';
 
-const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'photo', 'thresh', 'detach', 'wear', 'id', 'born'];
+const GENE_KEYS = ['photo', 'thresh', 'detach', 'split', 'share', 'cap', 'mut'];
+const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'wear', 'id', 'born', ...GENE_KEYS];
 const NEIGHBORS = [[1, 0], [-1, 1], [0, 1], [1, 1]];
 
 export function createWorld(cfg) {
@@ -36,7 +37,15 @@ export function createWorld(cfg) {
     bondB: new Int32Array(cfg.cap * 2),
     remap: new Int32Array(cfg.cap),
   };
-  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, cfg.lucaPhoto, cfg.lucaThresh, cfg.lucaDetach);
+  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, {
+    photo: cfg.lucaPhoto,
+    thresh: cfg.lucaThresh,
+    detach: cfg.lucaDetach,
+    split: cfg.lucaSplit,
+    share: cfg.lucaShare,
+    cap: cfg.lucaCap,
+    mut: cfg.lucaMut,
+  });
   w.matter0 = totalMatter(w);
   computeLight(w);
   return w;
@@ -66,7 +75,7 @@ export function totalMatter(w) {
   return sum;
 }
 
-function spawn(w, x, y, fat, photo, thresh, detach) {
+function spawn(w, x, y, fat, genes) {
   const c = w.cells;
   const i = w.n++;
   c.x[i] = x;
@@ -74,9 +83,7 @@ function spawn(w, x, y, fat, photo, thresh, detach) {
   c.vx[i] = 0;
   c.vy[i] = 0;
   c.fat[i] = fat;
-  c.photo[i] = photo;
-  c.thresh[i] = thresh;
-  c.detach[i] = detach;
+  for (const k of GENE_KEYS) c[k][i] = genes[k];
   c.wear[i] = 0;
   c.id[i] = w.nextId++;
   c.born[i] = w.tick;
@@ -113,7 +120,8 @@ function computeLight(w) {
 // Aging never kills directly: output falls until a cell can't feed itself.
 const efficiency = (w, i) => 1 / (1 + w.cells.wear[i] / w.cfg.wearHalf);
 
-const upkeepCost = (w, i) => w.cfg.upkeep * (1 + w.cfg.photoUpkeep * w.cells.photo[i]);
+const upkeepCost = (w, i) =>
+  w.cfg.upkeep * (1 + w.cfg.photoUpkeep * w.cells.photo[i] + w.cfg.capUpkeep * w.cells.cap[i]);
 
 function stepCells(w) {
   const count = w.n; // daughters born this tick act next tick
@@ -145,8 +153,9 @@ function stepWet(w, i) {
   const s = square(w, i);
   c.wear[i]++;
 
-  // Photosynthesis: 2 spent + light -> 1 fat + 1 vital
-  const made = Math.min(c.photo[i] * w.light[s] * efficiency(w, i), w.spent[s] / 2);
+  // Photosynthesis: 2 spent + light -> 1 fat + 1 vital. A full cell makes no more.
+  const room = Math.max(0, c.cap[i] - c.fat[i]);
+  const made = Math.min(c.photo[i] * w.light[s] * efficiency(w, i), w.spent[s] / 2, room);
   w.spent[s] -= 2 * made;
   w.vital[s] += made;
   c.fat[i] += made;
@@ -167,7 +176,7 @@ function stepWet(w, i) {
     kill(w, i);
     return;
   }
-  if (c.fat[i] >= c.thresh[i] && w.n < cfg.cap && w.rand() < cfg.splitChance) divide(w, i);
+  if (c.fat[i] >= c.thresh[i] && w.n < cfg.cap && w.rand() < c.split[i]) divide(w, i);
   move(w, i);
 }
 
@@ -196,25 +205,37 @@ function kill(w, i) {
   fat[i] = -1; // dead marker, removed by compact()
 }
 
+// A new organism's genes: each is nudged by an amount set by the parent's mutation factor.
+function mutatedGenes(w, i) {
+  const { cells: c, cfg, rand } = w;
+  const nudge = (key, scale, min, max) =>
+    Math.min(max, Math.max(min, c[key][i] + (rand() + rand() - 1) * c.mut[i] * scale));
+  return {
+    photo: nudge('photo', 1, 0, 1),
+    thresh: nudge('thresh', 10, cfg.minThresh, Infinity),
+    detach: nudge('detach', 5, 0, 1),
+    split: nudge('split', 1, 0, 1),
+    share: nudge('share', 2, 0, 1),
+    cap: nudge('cap', 10, cfg.minThresh, Infinity),
+    mut: nudge('mut', 0.25, cfg.minMutation, Infinity),
+  };
+}
+
 function divide(w, i) {
   const { cells: c, cfg, rand } = w;
   c.fat[i] -= cfg.divideCost + cfg.cellBiomass; // burned, and locked into the daughter's body
   toSpent(w, square(w, i), cfg.divideCost);
-  const share = c.fat[i] / 2;
+  const share = c.fat[i] * c.share[i];
   c.fat[i] -= share;
   c.wear[i] += cfg.wearDivide;
   const d = w.n;
   const detached = rand() < c.detach[i] || w.nBonds >= w.bondA.length;
   if (detached) {
     // A new organism: mutation happens only here.
-    const mutate = (v, scale) => v + (rand() + rand() - 1) * cfg.mutation * scale;
-    const photo = Math.min(1, Math.max(0, mutate(c.photo[i], 1)));
-    const thresh = Math.max(cfg.minThresh, mutate(c.thresh[i], 10));
-    const detach = Math.min(1, Math.max(0, mutate(c.detach[i], 5)));
-    spawn(w, c.x[i], c.y[i], share, photo, thresh, detach);
+    spawn(w, c.x[i], c.y[i], share, mutatedGenes(w, i));
   } else {
     // Same organism: identical genes, joined by a bond.
-    spawn(w, c.x[i], c.y[i], share, c.photo[i], c.thresh[i], c.detach[i]);
+    spawn(w, c.x[i], c.y[i], share, Object.fromEntries(GENE_KEYS.map((k) => [k, c[k][i]])));
     w.bondA[w.nBonds] = i;
     w.bondB[w.nBonds] = d;
     w.nBonds++;

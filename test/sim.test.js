@@ -89,8 +89,8 @@ test('touching a side edge kills a cell, matter conserved', () => {
 
 test('cell on land burns fat at upkeep and starves, matter conserved', () => {
   const w = placed(2, -4.5);
-  const { lucaFat, lucaPhoto, upkeep, photoUpkeep } = DEFAULTS;
-  const cost = upkeep * (1 + photoUpkeep * lucaPhoto);
+  const { lucaFat, lucaPhoto, lucaCap, upkeep, photoUpkeep, capUpkeep } = DEFAULTS;
+  const cost = upkeep * (1 + photoUpkeep * lucaPhoto + capUpkeep * lucaCap);
   const lifespan = Math.ceil(lucaFat / cost);
 
   for (let t = 1; t < lifespan; t++) {
@@ -133,7 +133,7 @@ test('motion is smooth: velocity carries over between ticks', () => {
 });
 
 test('division is a push, not a jump, and conserves momentum', () => {
-  const w = createWorld({ ...DEFAULTS, drift: 0, damping: 1, repel: 0, gravity: 0, lucaFat: 3, lucaThresh: 2, lucaDetach: 1, splitChance: 1 });
+  const w = createWorld({ ...DEFAULTS, drift: 0, damping: 1, repel: 0, gravity: 0, lucaFat: 3, lucaThresh: 2, lucaDetach: 1, lucaSplit: 1 });
   const { x: x0, y: y0 } = { x: w.cells.x[0], y: w.cells.y[0] };
   stepWorld(w);
   assert.equal(w.n, 2);
@@ -145,7 +145,7 @@ test('division is a push, not a jump, and conserves momentum', () => {
 });
 
 test('overlapping cells push apart, far cells do not', () => {
-  const w = createWorld({ ...DEFAULTS, drift: 0, lucaThresh: 1e9, lucaFat: 5, splitChance: 0 });
+  const w = createWorld({ ...DEFAULTS, drift: 0, lucaThresh: 1e9, lucaFat: 5, lucaSplit: 0 });
   const c = w.cells;
   c.x[1] = c.x[0] + 0.1;
   c.y[1] = c.y[0];
@@ -222,7 +222,7 @@ test('atmosphere and water start in balance', () => {
 });
 
 test('division burns fat at the set cost, matter conserved', () => {
-  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaThresh: 2, splitChance: 1 });
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaThresh: 2, lucaSplit: 1 });
   stepWorld(w);
   assert.equal(w.n, 2);
   assert.ok(Math.abs(w.cells.fat[0] + w.cells.fat[1] - (3 - DEFAULTS.divideCost - DEFAULTS.cellBiomass)) < 1e-9);
@@ -310,7 +310,8 @@ test('with no vital, a cell burns extra fat instead of dying at once', () => {
   const matter = totalMatter(w);
   stepWorld(w);
   assert.equal(w.n, 1);
-  assert.ok(Math.abs(w.cells.fat[0] - (1 - DEFAULTS.upkeep * DEFAULTS.noVitalCost)) < 1e-9);
+  const cost = DEFAULTS.upkeep * (1 + DEFAULTS.capUpkeep * DEFAULTS.lucaCap);
+  assert.ok(Math.abs(w.cells.fat[0] - (1 - cost * DEFAULTS.noVitalCost)) < 1e-9);
   assert.ok(Math.abs(totalMatter(w) - matter) < 1e-6);
   assert.ok(before > matter);
   for (let t = 0; t < 100 && w.n; t++) stepWorld(w);
@@ -319,7 +320,7 @@ test('with no vital, a cell burns extra fat instead of dying at once', () => {
 
 // Two cells joined by one bond, on the deep floor's open water.
 const bondedPair = (overrides, gap) => {
-  const w = createWorld({ ...DEFAULTS, drift: 0, gravity: 0, repel: 0, upkeep: 0, lucaPhoto: 0, lucaThresh: 1e9, splitChance: 0, ...overrides });
+  const w = createWorld({ ...DEFAULTS, drift: 0, gravity: 0, repel: 0, upkeep: 0, lucaPhoto: 0, lucaThresh: 1e9, lucaSplit: 0, ...overrides });
   const c = w.cells;
   c.y[0] = 20;
   c.x[1] = c.x[0] + gap;
@@ -335,7 +336,7 @@ const bondedPair = (overrides, gap) => {
 };
 
 test('a daughter that stays is bonded and genetically identical', () => {
-  const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaThresh: 2, lucaDetach: 0, splitChance: 1 });
+  const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaThresh: 2, lucaDetach: 0, lucaSplit: 1 });
   stepWorld(w);
   const c = w.cells;
   assert.equal(w.n, 2);
@@ -344,10 +345,68 @@ test('a daughter that stays is bonded and genetically identical', () => {
   assert.equal(c.photo[0], c.photo[1]);
   assert.equal(c.thresh[0], c.thresh[1]);
   assert.equal(c.detach[0], c.detach[1]);
+  assert.equal(c.split[0], c.split[1]);
+  assert.equal(c.share[0], c.share[1]);
+  assert.equal(c.cap[0], c.cap[1]);
+  assert.equal(c.mut[0], c.mut[1]);
+});
+
+test('a full cell makes no more fat', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaFat: 2, lucaCap: 2, lucaThresh: 1e9 });
+  stepWorld(w);
+  assert.equal(w.cells.fat[0], 2);
+
+  const roomy = createWorld({ ...DEFAULTS, upkeep: 0, lucaFat: 2, lucaCap: 3, lucaThresh: 1e9 });
+  stepWorld(roomy);
+  assert.ok(roomy.cells.fat[0] > 2);
+});
+
+test('more fat capacity costs more upkeep', () => {
+  const burned = (lucaCap) => {
+    const w = createWorld({ ...DEFAULTS, lucaCap });
+    w.cells.x[0] = 2;
+    w.cells.y[0] = -4.5;
+    stepWorld(w);
+    return DEFAULTS.lucaFat - w.cells.fat[0];
+  };
+  assert.ok(burned(8) > burned(2));
+});
+
+test('a cell with no split chance never divides', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaSplit: 0 });
+  for (let t = 0; t < 100; t++) stepWorld(w);
+  assert.equal(w.n, 1);
+});
+
+test('the daughter share gene sets how fat is divided', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaDetach: 1, lucaSplit: 1, lucaShare: 0.25 });
+  stepWorld(w);
+  assert.equal(w.n, 2);
+  const left = 3 - DEFAULTS.divideCost - DEFAULTS.cellBiomass;
+  assert.ok(Math.abs(w.cells.fat[1] - left * 0.25) < 1e-9);
+  assert.ok(Math.abs(w.cells.fat[0] - left * 0.75) < 1e-9);
+});
+
+test('the mutation factor sets mutation size, mutates itself, and has a minimum', () => {
+  const founded = (overrides) => {
+    const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaDetach: 1, lucaSplit: 1, ...overrides });
+    stepWorld(w);
+    assert.equal(w.n, 2);
+    return w.cells;
+  };
+  const frozen = founded({ lucaMut: 0, minMutation: 0 });
+  assert.equal(frozen.photo[0], frozen.photo[1]);
+  assert.equal(frozen.mut[1], 0);
+
+  const normal = founded({});
+  assert.notEqual(normal.mut[0], normal.mut[1]);
+
+  const low = founded({ lucaMut: 0.001, minMutation: 0.002 });
+  assert.equal(low.mut[1], 0.002);
 });
 
 test('a daughter that detaches has no bond and mutates', () => {
-  const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaThresh: 2, lucaDetach: 1, splitChance: 1 });
+  const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaThresh: 2, lucaDetach: 1, lucaSplit: 1 });
   stepWorld(w);
   assert.equal(w.n, 2);
   assert.equal(w.nBonds, 0);

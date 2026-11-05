@@ -111,6 +111,7 @@ Outputs of living things:
 
 Fat:
 - Every cell holds a little fat; dedicated storage emerges as cells or clusters with high fat capacity.
+- A cell at its fat capacity makes no more fat. Capacity limits production only: fat flowing across bonds can push a cell past it.
 - Fat flows passively between bonded cells, from more to less, at a rate set by bond permeability.
 
 Because bodies lock up matter as biomass, **total matter limits how much life can exist**.

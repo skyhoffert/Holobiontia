@@ -62,16 +62,20 @@ export const DEFAULTS = {
 
   wearDivide: 300, // wear added to the parent at each division
   divideCost: 0.2, // fat burned at each division; with cellBiomass, keep below minThresh
-  minThresh: 1, // lowest fat threshold that can evolve
+  minThresh: 1, // lowest fat threshold and fat capacity that can evolve
   wearHalf: 10000, // wear at which photosynthesis output is halved
 
-  splitChance: 0.1,
-  mutation: 0.02,
+  capUpkeep: 0.05, // upkeep multiplier per unit of fat capacity
+  minMutation: 0.002, // lowest mutation factor that can evolve, so evolution can't freeze
 
   lucaFat: 1,
   lucaPhoto: 0.05,
   lucaThresh: 2,
   lucaDetach: 0.9,
+  lucaSplit: 0.1, // chance per tick of dividing once past the fat threshold
+  lucaShare: 0.5, // fraction of fat given to the daughter
+  lucaCap: 4, // photosynthesis stops at this much fat
+  lucaMut: 0.02, // mutation factor
 };
 
 // Live sliders. Keys must exist in DEFAULTS.
@@ -79,7 +83,8 @@ export const KNOBS = [
   { key: 'light', label: 'Light', min: 0, max: 2, step: 0.01 },
   { key: 'lightDepth', label: 'Light depth', min: 0.5, max: 20, step: 0.1 },
   { key: 'upkeep', label: 'Upkeep', min: 0.001, max: 0.05, step: 0.001 },
-  { key: 'mutation', label: 'Mutation', min: 0.001, max: 0.2, step: 0.001 },
+  { key: 'capUpkeep', label: 'Fat capacity upkeep', min: 0, max: 0.5, step: 0.01 },
+  { key: 'minMutation', label: 'Min mutation factor', min: 0, max: 0.05, step: 0.001 },
   { key: 'drift', label: 'Drift', min: 0, max: 0.006, step: 0.0001 },
   { key: 'airExchange', label: 'Air exchange', min: 0, max: 0.2, step: 0.005 },
   { key: 'divideCost', label: 'Division fat cost', min: 0, max: 0.6, step: 0.01 },
@@ -90,7 +95,6 @@ export const KNOBS = [
   { key: 'wearDivide', label: 'Division wear', min: 0, max: 2000, step: 10 },
   { key: 'wearHalf', label: 'Wear half-output', min: 1000, max: 30000, step: 500 },
   { key: 'minThresh', label: 'Min fat threshold', min: 1, max: 5, step: 0.1 },
-  { key: 'splitChance', label: 'Split chance', min: 0.001, max: 0.2, step: 0.001 },
   { key: 'repel', label: 'Repulsion', min: 0, max: 0.03, step: 0.0005 },
   { key: 'contactDist', label: 'Contact distance', min: 0.1, max: 0.95, step: 0.01 },
   { key: 'bondStiffness', label: 'Bond stiffness', min: 0, max: 0.05, step: 0.001 },

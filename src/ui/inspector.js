@@ -31,6 +31,10 @@ function cellStats(snap, i) {
     row('Photosynthesis', c.photo[i].toFixed(3)),
     row('Fat threshold', c.thresh[i].toFixed(3)),
     row('Detach chance', c.detach[i].toFixed(3)),
+    row('Split chance', c.split[i].toFixed(3)),
+    row('Daughter share', c.share[i].toFixed(3)),
+    row('Fat capacity', c.cap[i].toFixed(3)),
+    row('Mutation factor', c.mut[i].toFixed(4)),
   ].join('');
 }
 
