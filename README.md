@@ -11,9 +11,9 @@ npm test
 
 ## Layout
 - `src/sim/` no DOM. `world.js` rules, `worker.js` loop + messages, `config.js` constants + sliders, `rng.js` PRNG.
-- `src/ui/` no sim rules. `main.js` wiring, `view.js` world canvas, `graph.js`, `inspector.js`.
+- `src/ui/` no sim rules. `main.js` wiring, `view.js` world canvas, `graph.js`, `inspector.js`, `legend.js`, `organisms.js`.
 - `test/` Node tests of sim invariants.
 
 ## Rules
 - Determinism: seeded RNG only, no wall-clock in `world.js`.
-- Conservation: vital + spent + fat, in water, cells and air, stays constant.
+- Conservation: vital + spent + detritus + sediment + fat + biomass, in water, floor, cells and air, stays constant.

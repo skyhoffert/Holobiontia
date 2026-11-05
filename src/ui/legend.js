@@ -6,6 +6,7 @@ const NOTES = {
   light: `Unshaded surface: ${DEFAULTS.light}`,
   vital: `World starts at ${DEFAULTS.vital0} per square`,
   spent: `World starts at ${DEFAULTS.spent0} per square`,
+  detritus: 'Dead matter, sinking. The brown floor band is sediment.',
 };
 
 const rgb = (c) => `rgb(${c.join(',')})`;

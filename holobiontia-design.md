@@ -70,7 +70,7 @@ Water contents are **concentrations on a coarse grid**, not particles.
 - **Sloped/varied terrain**, stored as a **heightmap** (one height per column). Creates habitats from sunlit shallows to dark depths.
 - **Basin shape:** each side rises in **stepped slopes** with flat shelves at several depths, different on each side, to a sloping mountain above the water surface, ending in a little flat land before the edge.
 - **Out of water:** cells can cross the surface and rest on land. There is no energy or other resource there, so upkeep burns stored fat and a cell starves at zero, as anywhere else. Gravity pulls cells back down. Matter released out of water runs off to the nearest shore.
-- **Sediment:** each column stores detritus that lands on it; it slowly breaks down into spent.
+- **Sediment:** each column stores detritus that lands on it; it slowly breaks down into spent in the deepest water above it, using vital where available (1 sediment + 1 vital → 2 spent, else 1 sediment → 1 spent), so the floor can't trap matter for good.
 - **Vents:** a few fixed points that
   - emit the **vent chemical** (second energy source, used by chemosynthesis);
   - create a **rising plume** that carries spent upward — upwelling.
@@ -98,7 +98,7 @@ Reactions (unit counts are conserved):
 - **Photosynthesis:** 2 spent + light → 1 fat + 1 vital
 - **Chemosynthesis:** 2 spent + vent chemical → 1 fat + 1 vital *(Proposed: same form as photosynthesis)*
 - **Respiration:** 1 fat + 1 vital → 2 spent + energy (used immediately)
-- **Building:** a trait's build cost converts fat into **biomass** (1 fat → 1 biomass), locked in the cell's body.
+- **Building:** a trait's build cost converts fat into **biomass** (1 fat → 1 biomass), locked in the cell's body. Until trait costs exist, every cell locks the same fixed amount, paid by the parent at division. This also means a starved cell, at zero fat, still leaves a corpse.
 - **Digestion:** biomass or detritus + energy → part becomes fat; the undigested remainder is released as **detritus (poop)**.
 - **Death:** much of the body's biomass and fat decays straight into spent; the rest becomes detritus.
 - **Decay:** 1 detritus + 1 vital → 2 spent (slow, ambient). Heavy decay uses up vital, creating **low-vital dead zones**, as in real oceans.
@@ -155,7 +155,7 @@ Because bodies lock up matter as biomass, **total matter limits how much life ca
 - Each cell has a **wear** value that rises every tick and jumps at each division (cost of reproduction).
 - **Wear lowers efficiency:** a cell's processing output falls as wear rises (halved at a set wear level). Aging never kills directly.
 - **Every new cell starts at zero wear.** Only the parent carries the cost of dividing.
-- **Starvation** is the only natural death: a cell that can't cover upkeep burns its fat and dies at zero.
+- **Starvation** is the only natural death: a cell that can't cover upkeep burns its fat and dies at zero. Without Vital, upkeep still gets paid by burning extra fat, so a cell starves faster rather than dropping dead.
 - On death, the cell's matter becomes spent and detritus (section 3).
 
 ---
@@ -175,6 +175,7 @@ A bond is a **spring between two cell centers**. Rest length comes from cell siz
 
 - **Target bonds:** each cell's genome specifies the bond it wants (stiffness, strength, conductance, permeability). The actual bond is the **average of both cells' targets, plus imperfection** that grows with genetic distance.
 - **Bending:** angle springs at each cell (expensive bending-stiffness trait). Rigidity from **triangulated** bonds is cheap but needs more cells.
+- **Organism identity comes from connectivity:** an organism is whichever cells are currently joined by bonds, so bodies split naturally when a bond snaps or a cell dies.
 - **Breaking:** a bond stretched past its strength snaps. Enables tearing prey, natural fragmentation, and a toughness-vs-upkeep trade-off.
 - **Contact bonding** (one rule for all bonds formed on touch): bond chance = grabber's **stickiness** × target's **willingness**, reduced by genetic distance. Same-organism bonds are the zero-distance case. Without contact bonding, bodies could only be chains and trees — never triangles or closed shapes.
   - **Self-recognition:** willingness toward self and close kin is high regardless of susceptibility; toward strangers it approaches the susceptibility trait as genetic distance grows. A heavily defended organism can still bond freely within its own body.

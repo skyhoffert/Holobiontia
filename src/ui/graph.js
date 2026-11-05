@@ -6,6 +6,7 @@ const SERIES = [
   { key: 'photo', label: 'mean photosynthesis', color: '#e0c060', digits: 3 },
   { key: 'thresh', label: 'mean fat threshold', color: '#e08a6f', digits: 2 },
   { key: 'age', label: 'mean age', color: '#8fb4e8', digits: 0 },
+  { key: 'body', label: 'mean organism size', color: '#d59be0', digits: 2 },
 ];
 
 const mean = (values, n) => (n ? values.reduce((a, b) => a + b, 0) / n : 0);
@@ -25,6 +26,8 @@ export function createGraph(canvas) {
       photo: mean(photo, snap.n),
       thresh: mean(thresh, snap.n),
       age: snap.tick - mean(born, snap.n),
+      body: snap.organisms.count ? snap.n / snap.organisms.count : 0,
+
     });
     if (points.length > MAX_POINTS) points.shift();
     draw();
