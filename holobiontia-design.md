@@ -32,14 +32,16 @@ There is no strict success metric; the goal is to **observe evolution**. In part
 
 ## 2. World
 
-- **2D vertical slice** of water (side view, like an aquarium). Sides wrap around.
+- **2D vertical slice** of water (side view, like an aquarium). **Sides do not wrap:** the world is a basin (see 2.3), and anything touching a side edge dies.
 - Minimal gravity; things float or sink by density relative to water.
+- **Passive motion:** cells have velocity. Water damps it and adds small random nudges, so cells glide rather than vibrate. Rock stops motion along the blocked axis only, so cells can slide. Parent and daughter push apart, equal and opposite, at division.
 
 ### 2.1 Concentration grid
 Water contents are **concentrations on a coarse grid**, not particles.
 - Each field diffuses to neighboring squares and drifts vertically by buoyancy.
 - A cell draws from and releases into the square it occupies. **Draws are clamped** so values never go negative.
-- No flow through the surface or floor.
+- No flow through the floor.
+- **Atmosphere exchange:** surface squares trade vital and spent with one shared air reservoir per gas, moving toward the air's level. Like real gas exchange, this resupplies shallows from above. Air counts toward total matter.
 - **Fields pass through bodies:** cells are not diffusion barriers.
 - **Body motion does not stir the water.**
 - **Membrane boundary:** outside a cell, resources are diffuse and shared; organisms cannot grab, carry or herd them. To own a resource is to absorb it.
@@ -47,8 +49,8 @@ Water contents are **concentrations on a coarse grid**, not particles.
 
 | Field | Kind | Behavior |
 |---|---|---|
-| Oxygen | Matter | Rises slightly |
-| Dissolved waste | Matter | Sinks slowly. Input for photosynthesis. |
+| Vital | Matter | Rises slightly |
+| Spent | Matter | Sinks slowly. Input for photosynthesis. |
 | Detritus | Matter | Sinks faster. Settles into floor sediment. |
 | Vent chemical | Energy | Emitted at vents, diffuses, fades |
 | Light | Energy | Recomputed every tick (see 2.2) |
@@ -66,10 +68,12 @@ Water contents are **concentrations on a coarse grid**, not particles.
 
 ### 2.3 Floor
 - **Sloped/varied terrain**, stored as a **heightmap** (one height per column). Creates habitats from sunlit shallows to dark depths.
-- **Sediment:** each column stores detritus that lands on it; it slowly breaks down into dissolved waste.
+- **Basin shape:** each side rises in **stepped slopes** with flat shelves at several depths, different on each side, to a sloping mountain above the water surface, ending in a little flat land before the edge.
+- **Out of water:** cells can cross the surface and rest on land. There is no energy or other resource there, so upkeep burns stored fat and a cell starves at zero, as anywhere else. Gravity pulls cells back down. Matter released out of water runs off to the nearest shore.
+- **Sediment:** each column stores detritus that lands on it; it slowly breaks down into spent.
 - **Vents:** a few fixed points that
   - emit the **vent chemical** (second energy source, used by chemosynthesis);
-  - create a **rising plume** that carries dissolved waste upward — upwelling.
+  - create a **rising plume** that carries spent upward — upwelling.
 - **Anchoring:** cells can bond to the floor (governed by stickiness); anchor bonds break like any other.
 - **The matter trap** this solves: without a return path, sinking matter accumulates on the floor and the surface starves.
 - **Future floor interaction** (cheap thanks to the heightmap), in rough order of cost: eating sediment; **reef building** (dead high-stiffness cells become floor height); digging/burrowing.
@@ -78,30 +82,32 @@ Water contents are **concentrations on a coarse grid**, not particles.
 
 ## 3. Matter and Energy
 
-**Energy is instantaneous:** produced and spent in the same tick. Everything persistent is matter.
+**Energy is instantaneous:** produced and used in the same tick. Everything persistent is matter.
+
+**Naming:** Vital and Spent are this world's own substances, loosely inspired by O₂ and CO₂. Fat burns with Vital and leaves Spent; light turns Spent back into fat and Vital.
 
 | Material | Analog | Where it lives |
 |---|---|---|
-| Oxygen | O₂ | Grid field; inside cells once absorbed |
+| Vital | O₂ | Grid field; inside cells once absorbed |
 | Fat | Sugars/lipids | Inside cells. Stored energy. Less dense than water. Moves freely across bonds. |
 | Biomass | Body tissue | Inside cells. Locked-in body material; must be digested to be eaten. |
-| Dissolved waste | CO₂ | Grid field |
+| Spent | CO₂ | Grid field |
 | Detritus | Dead organic matter | Grid field, then floor sediment |
 
 Reactions (unit counts are conserved):
-- **Photosynthesis:** 2 waste + light → 1 fat + 1 oxygen
-- **Chemosynthesis:** 2 waste + vent chemical → 1 fat + 1 oxygen *(Proposed: same form as photosynthesis)*
-- **Respiration:** 1 fat + 1 oxygen → 2 waste + energy (spent immediately)
+- **Photosynthesis:** 2 spent + light → 1 fat + 1 vital
+- **Chemosynthesis:** 2 spent + vent chemical → 1 fat + 1 vital *(Proposed: same form as photosynthesis)*
+- **Respiration:** 1 fat + 1 vital → 2 spent + energy (used immediately)
 - **Building:** a trait's build cost converts fat into **biomass** (1 fat → 1 biomass), locked in the cell's body.
 - **Digestion:** biomass or detritus + energy → part becomes fat; the undigested remainder is released as **detritus (poop)**.
-- **Death:** much of the body's biomass and fat decays straight into dissolved waste; the rest becomes detritus.
-- **Decay:** 1 detritus + 1 oxygen → 2 dissolved waste (slow, ambient). Heavy decay uses up oxygen, creating **low-oxygen dead zones**, as in real oceans.
-- **Limiting factor:** production = trait factor × local light (or vent chemical), capped by available waste.
+- **Death:** much of the body's biomass and fat decays straight into spent; the rest becomes detritus.
+- **Decay:** 1 detritus + 1 vital → 2 spent (slow, ambient). Heavy decay uses up vital, creating **low-vital dead zones**, as in real oceans.
+- **Limiting factor:** production = trait factor × local light (or vent chemical), capped by available spent.
 
 Outputs of living things:
-- **Respiration** → dissolved waste (exhaling).
+- **Respiration** → spent (exhaling).
 - **Digestion leftovers** → detritus (pooping). Sinks like marine snow and feeds detritivores; scavengers following larger animals can evolve.
-- **Death** → dissolved waste and detritus.
+- **Death** → spent and detritus.
 
 Fat:
 - Every cell holds a little fat; dedicated storage emerges as cells or clusters with high fat capacity.
@@ -109,7 +115,7 @@ Fat:
 
 Because bodies lock up matter as biomass, **total matter limits how much life can exist**.
 
-**Conservation check:** total oxygen + fat + biomass + dissolved waste + detritus (including sediment) is constant. A built-in debugging invariant.
+**Conservation check:** total vital + fat + biomass + spent + detritus (including sediment), plus the atmosphere's vital and spent, is constant. A built-in debugging invariant.
 
 ---
 
@@ -141,15 +147,16 @@ Because bodies lock up matter as biomass, **total matter limits how much life ca
 
 ### 4.2 Buoyancy
 - A **weak** force: a gentle bias, small compared with muscle power.
+- **Gravity is the same everywhere.** Water pushes back according to density, so the net force in water is small; air doesn't, so cells out of water fall.
 - Density comes from existing traits: **fat lowers it, stiffness raises it.**
 - Applied **per cell**, so bodies feel **torque**. Placement of dense and fatty cells sets orientation (dense holdfast below, buoyant floats above).
 
 ### 4.3 Aging and death
 - Each cell has a **wear** value that rises every tick and jumps at each division (cost of reproduction).
-- **Death chance per tick** starts small at zero wear, rises with wear, and levels off at a maximum.
+- **Wear lowers efficiency:** a cell's processing output falls as wear rises (halved at a set wear level). Aging never kills directly.
 - **Every new cell starts at zero wear.** Only the parent carries the cost of dividing.
-- **Starvation** kills a cell outright at zero fat.
-- On death, the cell's matter becomes dissolved waste and detritus (section 3).
+- **Starvation** is the only natural death: a cell that can't cover upkeep burns its fat and dies at zero.
+- On death, the cell's matter becomes spent and detritus (section 3).
 
 ---
 
@@ -183,7 +190,7 @@ A bond is a **spring between two cell centers**. Rest length comes from cell siz
 ## 6. Movement, Signals, Senses and Hormones
 
 ### 6.1 Movement
-- Muscles are contracting bonds; contraction burns fat + oxygen in the moment.
+- Muscles are contracting bonds; contraction burns fat + vital in the moment.
 - **Drag approximation:** each bond acts as a paddle. Velocity perpendicular to the bond is damped strongly, along it weakly. Enough for swimming to produce thrust.
 
 ### 6.2 Signals and brain
@@ -201,7 +208,7 @@ Every sense is a **sensitivity trait** starting at zero; a sensing cell feeds it
 |---|---|---|
 | Cheap | Internal | Own fat, wear |
 | Cheap | Stretch | Own bond stretch |
-| Moderate | Chemical | Oxygen, waste, vent chemical, scents in its square |
+| Moderate | Chemical | Vital, spent, vent chemical, scents in its square |
 | Moderate | Light | Light in its square |
 | Moderate | Touch | Contact with self/kin/foreign cells or the floor |
 
@@ -266,6 +273,7 @@ Two routes to specialization, both supported:
 ## 8. Reproduction
 
 - **Mitosis does double duty:** a daughter that stays bonded is **growth**; one that detaches is **reproduction**.
+- **Dividing costs the parent:** it burns some fat and adds wear, so dividing as early as possible doesn't automatically win.
 - **Fragmentation / shedding:** an organism can deliberately release one of its own bonds (controlled by the genome and hormones). Everything beyond it leaves as a new organism, including bonded symbionts. Single-cell detachment is the smallest case. (Real example: lichens.)
 - A fragment gets **one newly mutated genome shared by all its cells**. Regulator values remap by innovation ID; bonds recompute from the new targets. Negligible compute cost.
 - **Meiosis / sexual reproduction is deferred** until organisms can sense and find each other.
@@ -288,7 +296,7 @@ Two routes to specialization, both supported:
 - **Cells are far more energy-dense than the fields**, to make predation pay:
   1. **Concentrated packets:** a cell holds much more matter than a typical square of detritus, which is thin and slow to gather.
   2. **Digestion efficiency:** living tissue yields much more usable fat than detritus.
-  3. **Corpses lose value fast:** at death, much of a cell's matter decays straight into dissolved waste.
+  3. **Corpses lose value fast:** at death, much of a cell's matter decays straight into spent.
   - Result: a ladder of strategies — photosynthesis (slow, free), scavenging (easy, poor), predation (risky, rich).
 
 ### 9.3 Guts, mouths and butts
@@ -419,7 +427,7 @@ Each milestone must run, and be interesting to watch, on its own before the next
 
 | Milestone | Theme | Adds |
 |---|---|---|
-| **1** | The dividing cell | Grid (oxygen, dissolved waste, detritus), light + shading, simple floor heightmap with sediment, cells (photosynthesis, fat, biomass, stiffness, strength, permeability), decay, buoyancy, wear and death, division/detach/daughter share, numeric mutation with mutation factor, springs and soft collisions, LUCA, heatmaps, sliders, determinism. Genome sets traits directly; all cells in an organism are identical. |
+| **1** | The dividing cell | Grid (vital, spent, detritus), light + shading, simple floor heightmap with sediment, cells (photosynthesis, fat, biomass, stiffness, strength, permeability), decay, buoyancy, wear and death, division/detach/daughter share, numeric mutation with mutation factor, springs and soft collisions, LUCA, heatmaps, sliders, determinism. Genome sets traits directly; all cells in an organism are identical. |
 | **2** | Bodies | Gene-regulation network and structural genome growth, innovation IDs, hormones, contact bonding, bending stiffness, fragmentation, sloped terrain, vents and chemosynthesis, anchoring, species display |
 | **3** | Movement and senses | Signal network, conductance, contractility, drag paddles, local senses, change sensing |
 | **4** | Ecology | Foreign bonding, predation by tearing and draining, digestion traits (diets), guts, metabolic and signature scents |
@@ -430,7 +438,7 @@ Each milestone must run, and be interesting to watch, on its own before the next
 
 ## 17. Open Questions
 
-1. **Chemosynthesis reaction** — confirm it mirrors photosynthesis (2 waste + vent chemical → 1 fat + 1 oxygen), or should it differ (e.g., produce no oxygen, as real chemosynthesis doesn't)?
+1. **Chemosynthesis reaction** — confirm it mirrors photosynthesis (2 spent + vent chemical → 1 fat + 1 vital), or should it differ (e.g., produce no vital, as real chemosynthesis doesn't)?
 2. **Scale targets** — world size and typical cell count.
 3. **Visual style** of the world rendering.
 
