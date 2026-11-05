@@ -49,13 +49,28 @@ function post() {
       light: cfg.light,
       vital: world.air.vital / (world.terrain.surface.length * cfg.airRows),
       spent: world.air.spent / (world.terrain.surface.length * cfg.airRows),
+      detritus: 0,
     },
     matter: totalMatter(world),
     matter0: world.matter0,
     cells: Object.fromEntries(Object.entries(cells).map(([k, v]) => [k, v.slice(0, n)])),
-    fields: { light: world.light.slice(), vital: world.vital.slice(), spent: world.spent.slice() },
+    fields: {
+      light: world.light.slice(),
+      vital: world.vital.slice(),
+      spent: world.spent.slice(),
+      detritus: world.detritus.slice(),
+    },
+    sediment: world.sediment.slice(),
+    bondA: world.bondA.slice(0, world.nBonds),
+    bondB: world.bondB.slice(0, world.nBonds),
   };
-  const buffers = [...Object.values(snapshot.cells), ...Object.values(snapshot.fields)].map((a) => a.buffer);
+  const buffers = [
+    ...Object.values(snapshot.cells),
+    ...Object.values(snapshot.fields),
+    snapshot.sediment,
+    snapshot.bondA,
+    snapshot.bondB,
+  ].map((a) => a.buffer);
   self.postMessage(snapshot, buffers);
 }
 

@@ -3,8 +3,10 @@ import { createGraph } from './graph.js';
 import { createView } from './view.js';
 import { renderInspector } from './inspector.js';
 import { renderLegend } from './legend.js';
+import { findOrganisms, membersOf } from './organisms.js';
 
 const $ = (id) => document.getElementById(id);
+const sum = (values) => values.reduce((a, b) => a + b, 0);
 
 const worker = new Worker(new URL('../sim/worker.js', import.meta.url), { type: 'module' });
 const send = (type, data = {}) => worker.postMessage({ type, ...data });
@@ -22,12 +24,15 @@ let overlay = $('overlay').value;
 
 worker.onmessage = ({ data }) => {
   snap = data;
+  snap.organisms = findOrganisms(snap);
   graph.push(snap);
   $('play').textContent = snap.playing ? 'Pause' : 'Play';
   const status = snap.n === 0 ? ' · EXTINCT' : '';
   const drift = (snap.matter - snap.matter0).toExponential(1);
   const air = `air vital ${snap.air.vital.toFixed(0)}, spent ${snap.air.spent.toFixed(0)}`;
-  $('stats').textContent = `tick ${snap.tick} · pop ${snap.n} · ${air} · matter drift ${drift}${status}`;
+  const dead = `detritus ${sum(snap.fields.detritus).toFixed(0)}, sediment ${sum(snap.sediment).toFixed(0)}`;
+  $('largest').textContent = `Largest: ${snap.organisms.largest}`;
+  $('stats').textContent = `tick ${snap.tick} · cells ${snap.n} · organisms ${snap.organisms.count} · ${air} · ${dead} · matter drift ${drift}${status}`;
   renderInspector($('inspector'), snap, selectedId);
 };
 
@@ -68,6 +73,12 @@ $('speed').oninput = setSpeed;
 $('overlay').onchange = (e) => {
   overlay = e.target.value;
   renderLegend($('legend'), overlay);
+};
+$('largest').onclick = () => {
+  if (!snap?.n) return;
+  const members = membersOf(snap.organisms, snap.organisms.largestRoot);
+  selectedId = snap.cells.id[view.focus(snap, members)];
+  renderInspector($('inspector'), snap, selectedId);
 };
 $('reset').onclick = () => {
   selectedId = null;

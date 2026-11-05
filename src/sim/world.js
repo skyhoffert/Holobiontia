@@ -1,7 +1,8 @@
 import { createRng } from './rng.js';
 import { createTerrain, isOpen } from './terrain.js';
 
-const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'photo', 'thresh', 'wear', 'id', 'born'];
+const GENE_KEYS = ['photo', 'thresh', 'detach', 'split', 'share', 'cap', 'mut'];
+const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'wear', 'id', 'born', ...GENE_KEYS];
 const NEIGHBORS = [[1, 0], [-1, 1], [0, 1], [1, 1]];
 
 export function createWorld(cfg) {
@@ -18,6 +19,8 @@ export function createWorld(cfg) {
     light: new Float64Array(size),
     vital: Float64Array.from(terrain.water, (wet) => wet * cfg.vital0),
     spent: Float64Array.from(terrain.water, (wet) => wet * cfg.spent0),
+    detritus: new Float64Array(size),
+    sediment: new Float64Array(cfg.gridW), // per column
     shade: new Float64Array(size),
     tmp: new Float64Array(size),
     // Atmosphere reservoirs, starting in balance with the water.
@@ -28,8 +31,21 @@ export function createWorld(cfg) {
     // Spatial grid for neighbor lookups: linked list of cells per square, sky rows included.
     bucketHead: new Int32Array(cfg.gridW * (cfg.gridH + cfg.skyRows)),
     bucketNext: new Int32Array(cfg.cap),
+    // Bonds: pairs of cell indices, kept in step with cells by compact().
+    nBonds: 0,
+    bondA: new Int32Array(cfg.cap * 2),
+    bondB: new Int32Array(cfg.cap * 2),
+    remap: new Int32Array(cfg.cap),
   };
-  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, cfg.lucaPhoto, cfg.lucaThresh);
+  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, {
+    photo: cfg.lucaPhoto,
+    thresh: cfg.lucaThresh,
+    detach: cfg.lucaDetach,
+    split: cfg.lucaSplit,
+    share: cfg.lucaShare,
+    cap: cfg.lucaCap,
+    mut: cfg.lucaMut,
+  });
   w.matter0 = totalMatter(w);
   computeLight(w);
   return w;
@@ -38,23 +54,28 @@ export function createWorld(cfg) {
 export function stepWorld(w) {
   computeLight(w);
   stepCells(w);
+  stepBonds(w);
   repelCells(w);
   exchangeAir(w, 'vital');
   exchangeAir(w, 'spent');
-  diffuse(w, w.vital);
-  diffuse(w, w.spent);
+  stepDetritus(w);
+  stepSediment(w);
+  diffuse(w, w.vital, w.cfg.diffusion);
+  diffuse(w, w.spent, w.cfg.diffusion);
+  diffuse(w, w.detritus, w.cfg.detritusDiffusion);
   w.tick++;
 }
 
 // Conservation invariant: must stay equal to w.matter0.
 export function totalMatter(w) {
-  let sum = w.air.vital + w.air.spent;
-  for (let i = 0; i < w.vital.length; i++) sum += w.vital[i] + w.spent[i];
+  let sum = w.air.vital + w.air.spent + w.n * w.cfg.cellBiomass;
+  for (let i = 0; i < w.vital.length; i++) sum += w.vital[i] + w.spent[i] + w.detritus[i];
+  for (let i = 0; i < w.sediment.length; i++) sum += w.sediment[i];
   for (let i = 0; i < w.n; i++) sum += w.cells.fat[i];
   return sum;
 }
 
-function spawn(w, x, y, fat, photo, thresh) {
+function spawn(w, x, y, fat, genes) {
   const c = w.cells;
   const i = w.n++;
   c.x[i] = x;
@@ -62,8 +83,7 @@ function spawn(w, x, y, fat, photo, thresh) {
   c.vx[i] = 0;
   c.vy[i] = 0;
   c.fat[i] = fat;
-  c.photo[i] = photo;
-  c.thresh[i] = thresh;
+  for (const k of GENE_KEYS) c[k][i] = genes[k];
   c.wear[i] = 0;
   c.id[i] = w.nextId++;
   c.born[i] = w.tick;
@@ -100,7 +120,8 @@ function computeLight(w) {
 // Aging never kills directly: output falls until a cell can't feed itself.
 const efficiency = (w, i) => 1 / (1 + w.cells.wear[i] / w.cfg.wearHalf);
 
-const upkeepCost = (w, i) => w.cfg.upkeep * (1 + w.cfg.photoUpkeep * w.cells.photo[i]);
+const upkeepCost = (w, i) =>
+  w.cfg.upkeep * (1 + w.cfg.photoUpkeep * w.cells.photo[i] + w.cfg.capUpkeep * w.cells.cap[i]);
 
 function stepCells(w) {
   const count = w.n; // daughters born this tick act next tick
@@ -122,7 +143,7 @@ function stepDry(w, i) {
   wear[i]++;
   const paid = Math.min(upkeepCost(w, i), fat[i]);
   fat[i] -= paid;
-  releaseFat(w, exchangeSquare(w, i), paid);
+  toSpent(w, exchangeSquare(w, i), paid);
   if (fat[i] <= 0) kill(w, i);
   else move(w, i);
 }
@@ -132,24 +153,30 @@ function stepWet(w, i) {
   const s = square(w, i);
   c.wear[i]++;
 
-  // Photosynthesis: 2 spent + light -> 1 fat + 1 vital
-  const made = Math.min(c.photo[i] * w.light[s] * efficiency(w, i), w.spent[s] / 2);
+  // Photosynthesis: 2 spent + light -> 1 fat + 1 vital. A full cell makes no more.
+  const room = Math.max(0, c.cap[i] - c.fat[i]);
+  const made = Math.min(c.photo[i] * w.light[s] * efficiency(w, i), w.spent[s] / 2, room);
   w.spent[s] -= 2 * made;
   w.vital[s] += made;
   c.fat[i] += made;
 
   // Respiration: 1 fat + 1 vital -> 2 spent
   const cost = upkeepCost(w, i);
-  const paid = Math.min(cost, c.fat[i], w.vital[s]);
-  c.fat[i] -= paid;
-  w.vital[s] -= paid;
-  w.spent[s] += 2 * paid;
+  const breathed = Math.min(cost, c.fat[i], w.vital[s]);
+  c.fat[i] -= breathed;
+  w.vital[s] -= breathed;
+  w.spent[s] += 2 * breathed;
 
-  if (paid < cost) {
+  // Short of vital: cover the rest by burning extra fat, 1 fat -> 1 spent.
+  const burned = Math.min((cost - breathed) * cfg.noVitalCost, c.fat[i]);
+  c.fat[i] -= burned;
+  w.spent[s] += burned;
+
+  if (c.fat[i] <= 0) {
     kill(w, i);
     return;
   }
-  if (c.fat[i] >= c.thresh[i] && w.n < cfg.cap && w.rand() < cfg.splitChance) divide(w, i);
+  if (c.fat[i] >= c.thresh[i] && w.n < cfg.cap && w.rand() < c.split[i]) divide(w, i);
   move(w, i);
 }
 
@@ -160,32 +187,59 @@ function exchangeSquare(w, i) {
   return water[own] ? own : shore[Math.min(w.cfg.gridW - 1, Math.max(0, Math.floor(w.cells.x[i])))];
 }
 
-// Fat becomes spent, using vital where available: 1 fat + 1 vital -> 2 spent, else 1 fat -> 1 spent.
-function releaseFat(w, s, amount) {
+// Matter becomes spent, using vital where available: 1 + 1 vital -> 2 spent, else 1 -> 1 spent.
+function toSpent(w, s, amount) {
   const burned = Math.min(amount, w.vital[s]);
   w.vital[s] -= burned;
   w.spent[s] += 2 * burned + (amount - burned);
 }
 
-// No detritus yet: all remaining fat decays straight to spent.
+// A corpse's fat and biomass split into detritus and spent.
 function kill(w, i) {
-  const { fat } = w.cells;
-  releaseFat(w, exchangeSquare(w, i), fat[i]);
+  const { cells: { fat }, cfg } = w;
+  const s = exchangeSquare(w, i);
+  const matter = fat[i] + cfg.cellBiomass;
+  const remains = matter * cfg.deathDetritus;
+  w.detritus[s] += remains;
+  toSpent(w, s, matter - remains);
   fat[i] = -1; // dead marker, removed by compact()
+}
+
+// A new organism's genes: each is nudged by an amount set by the parent's mutation factor.
+function mutatedGenes(w, i) {
+  const { cells: c, cfg, rand } = w;
+  const nudge = (key, scale, min, max) =>
+    Math.min(max, Math.max(min, c[key][i] + (rand() + rand() - 1) * c.mut[i] * scale));
+  return {
+    photo: nudge('photo', 1, 0, 1),
+    thresh: nudge('thresh', 10, cfg.minThresh, Infinity),
+    detach: nudge('detach', 5, 0, 1),
+    split: nudge('split', 1, 0, 1),
+    share: nudge('share', 2, 0, 1),
+    cap: nudge('cap', 10, cfg.minThresh, Infinity),
+    mut: nudge('mut', 0.25, cfg.minMutation, Infinity),
+  };
 }
 
 function divide(w, i) {
   const { cells: c, cfg, rand } = w;
-  c.fat[i] -= cfg.divideCost; // dividing burns fat
-  releaseFat(w, square(w, i), cfg.divideCost);
-  const share = c.fat[i] / 2;
+  c.fat[i] -= cfg.divideCost + cfg.cellBiomass; // burned, and locked into the daughter's body
+  toSpent(w, square(w, i), cfg.divideCost);
+  const share = c.fat[i] * c.share[i];
   c.fat[i] -= share;
   c.wear[i] += cfg.wearDivide;
-  const mutate = (v, scale) => v + (rand() + rand() - 1) * cfg.mutation * scale;
-  const photo = Math.min(1, Math.max(0, mutate(c.photo[i], 1)));
-  const thresh = Math.max(cfg.minThresh, mutate(c.thresh[i], 10));
   const d = w.n;
-  spawn(w, c.x[i], c.y[i], share, photo, thresh);
+  const detached = rand() < c.detach[i] || w.nBonds >= w.bondA.length;
+  if (detached) {
+    // A new organism: mutation happens only here.
+    spawn(w, c.x[i], c.y[i], share, mutatedGenes(w, i));
+  } else {
+    // Same organism: identical genes, joined by a bond.
+    spawn(w, c.x[i], c.y[i], share, Object.fromEntries(GENE_KEYS.map((k) => [k, c[k][i]])));
+    w.bondA[w.nBonds] = i;
+    w.bondB[w.nBonds] = d;
+    w.nBonds++;
+  }
 
   // Parent and daughter push apart, equal and opposite.
   const kickX = (rand() - 0.5) * 2 * cfg.divideKick;
@@ -217,6 +271,39 @@ function move(w, i) {
   const y = c.y[i] + c.vy[i];
   if (isOpen(terrain, cfg.gridW, c.x[i], y)) c.y[i] = y;
   else c.vy[i] = 0;
+}
+
+// Bonds: a spring toward bondRest that balances repulsion, passive fat flow from fuller
+// to emptier, and a snap past bondBreak. Fat updates in turn, so it can't go negative.
+function stepBonds(w) {
+  const { cells: c, cfg, bondA, bondB } = w;
+  const { bondStiffness, bondRest, bondBreak, fatFlow } = cfg;
+  let kept = 0;
+  for (let k = 0; k < w.nBonds; k++) {
+    const a = bondA[k];
+    const b = bondB[k];
+    const dx = c.x[b] - c.x[a];
+    const dy = c.y[b] - c.y[a];
+    const d = Math.hypot(dx, dy);
+    if (d > bondBreak) continue;
+
+    if (d > 0) {
+      const f = (bondStiffness * (d - bondRest)) / d;
+      c.vx[a] += f * dx;
+      c.vy[a] += f * dy;
+      c.vx[b] -= f * dx;
+      c.vy[b] -= f * dy;
+    }
+
+    const flow = fatFlow * (c.fat[a] - c.fat[b]);
+    c.fat[a] -= flow;
+    c.fat[b] += flow;
+
+    bondA[kept] = a;
+    bondB[kept] = b;
+    kept++;
+  }
+  w.nBonds = kept;
 }
 
 // Soft collisions: overlapping cells push apart, equal and opposite. Each pair is visited
@@ -262,16 +349,31 @@ function repelCells(w) {
   }
 }
 
-// Stable removal keeps iteration order deterministic.
+// Stable removal keeps iteration order deterministic. Bonds follow their cells or die with them.
 function compact(w) {
-  const c = w.cells;
+  const { cells: c, remap, bondA, bondB } = w;
   let to = 0;
   for (let from = 0; from < w.n; from++) {
-    if (c.fat[from] < 0) continue;
+    if (c.fat[from] < 0) {
+      remap[from] = -1;
+      continue;
+    }
     if (to !== from) for (const k of CELL_KEYS) c[k][to] = c[k][from];
+    remap[from] = to;
     to++;
   }
   w.n = to;
+
+  let kept = 0;
+  for (let k = 0; k < w.nBonds; k++) {
+    const a = remap[bondA[k]];
+    const b = remap[bondB[k]];
+    if (a < 0 || b < 0) continue;
+    bondA[kept] = a;
+    bondB[kept] = b;
+    kept++;
+  }
+  w.nBonds = kept;
 }
 
 // Surface squares move toward the air's level, trading matter with its reservoir.
@@ -288,9 +390,42 @@ function exchangeAir(w, gas) {
   }
 }
 
+// Decay: 1 detritus + 1 vital -> 2 spent, so without vital it just piles up.
+// Sinking runs bottom-up so matter moves one square per tick; the last square drops into sediment.
+function stepDetritus(w) {
+  const { gridW: W, gridH: H, detritusDecay, detritusSink } = w.cfg;
+  const { detritus, vital, spent, sediment } = w;
+  const { water, bottom } = w.terrain;
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = 0; x < W; x++) {
+      const s = y * W + x;
+      if (!water[s]) continue;
+      const rotted = Math.min(detritusDecay * detritus[s], vital[s]);
+      vital[s] -= rotted;
+      spent[s] += 2 * rotted;
+      const sunk = detritusSink * (detritus[s] - rotted);
+      detritus[s] -= rotted + sunk;
+      if (s === bottom[x]) sediment[x] += sunk;
+      else detritus[s + W] += sunk;
+    }
+  }
+}
+
+// Sediment slowly returns to the deepest water in its column as spent.
+function stepSediment(w) {
+  const { sediment } = w;
+  const { bottom } = w.terrain;
+  for (let x = 0; x < sediment.length; x++) {
+    if (bottom[x] < 0) continue;
+    const amount = w.cfg.sedimentDecay * sediment[x];
+    sediment[x] -= amount;
+    toSpent(w, bottom[x], amount);
+  }
+}
+
 // Conservative flux form between water squares only. No wrap.
-function diffuse(w, f) {
-  const { gridW: W, gridH: H, diffusion: r } = w.cfg;
+function diffuse(w, f, r) {
+  const { gridW: W, gridH: H } = w.cfg;
   const { water } = w.terrain;
   w.tmp.set(f);
   for (let y = 0; y < H; y++) {

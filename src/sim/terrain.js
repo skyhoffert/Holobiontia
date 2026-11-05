@@ -14,10 +14,15 @@ export function createTerrain({ gridW: W, gridH: H, terrain: points }) {
   const heights = Float64Array.from({ length: W + 1 }, (_, x) => floorAt(points, x));
 
   // A square is water if any part of it is. Every point in water is then in a water square.
+  // bottom: deepest water square per column, -1 for dry columns.
   const water = new Uint8Array(W * H);
+  const bottom = new Int32Array(W).fill(-1);
   for (let x = 0; x < W; x++) {
     const deepest = Math.max(heights[x], heights[x + 1]);
-    for (let y = 0; y < H && y < deepest; y++) water[y * W + x] = 1;
+    for (let y = 0; y < H && y < deepest; y++) {
+      water[y * W + x] = 1;
+      bottom[x] = y * W + x;
+    }
   }
 
   // Nearest top-row water square per column: where matter from dry cells runs off to.
@@ -29,7 +34,7 @@ export function createTerrain({ gridW: W, gridH: H, terrain: points }) {
   const surface = Int32Array.from({ length: lastWet - firstWet + 1 }, (_, i) => firstWet + i)
     .filter((s) => water[s]);
 
-  return { heights, water, shore, surface };
+  return { heights, water, bottom, shore, surface };
 }
 
 // True unless inside rock or past a side edge. Open air above the surface counts as open.

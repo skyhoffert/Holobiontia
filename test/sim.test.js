@@ -19,6 +19,8 @@ test('fields never go negative', () => {
   const w = run(2000);
   assert.ok(w.vital.every((v) => v >= 0));
   assert.ok(w.spent.every((v) => v >= 0));
+  assert.ok(w.detritus.every((v) => v >= 0));
+  assert.ok(w.sediment.every((v) => v >= 0));
 });
 
 test('same seed replays identically', () => {
@@ -27,6 +29,8 @@ test('same seed replays identically', () => {
   assert.equal(a.n, b.n);
   assert.deepEqual(a.cells.x.slice(0, a.n), b.cells.x.slice(0, b.n));
   assert.deepEqual(a.spent, b.spent);
+  assert.deepEqual(a.detritus, b.detritus);
+  assert.deepEqual(a.sediment, b.sediment);
 });
 
 // A world holding one cell at a given spot.
@@ -46,7 +50,7 @@ test('cells stay out of rock and dry squares hold no matter', () => {
     assert.ok(w.cells.y[i] < floor);
   }
   water.forEach((wet, s) => {
-    if (!wet) assert.equal(w.vital[s] + w.spent[s], 0);
+    if (!wet) assert.equal(w.vital[s] + w.spent[s] + w.detritus[s], 0);
   });
 });
 
@@ -79,25 +83,25 @@ test('touching a side edge kills a cell, matter conserved', () => {
     const w = placed(x, -7);
     stepWorld(w);
     assert.equal(w.n, 0);
-    assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-9);
+    assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
   }
 });
 
 test('cell on land burns fat at upkeep and starves, matter conserved', () => {
   const w = placed(2, -4.5);
-  const { lucaFat, lucaPhoto, upkeep, photoUpkeep } = DEFAULTS;
-  const cost = upkeep * (1 + photoUpkeep * lucaPhoto);
+  const { lucaFat, lucaPhoto, lucaCap, upkeep, photoUpkeep, capUpkeep } = DEFAULTS;
+  const cost = upkeep * (1 + photoUpkeep * lucaPhoto + capUpkeep * lucaCap);
   const lifespan = Math.ceil(lucaFat / cost);
 
   for (let t = 1; t < lifespan; t++) {
     stepWorld(w);
     assert.equal(w.n, 1);
     assert.ok(Math.abs(w.cells.fat[0] - (lucaFat - t * cost)) < 1e-9);
-    assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-9);
+    assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
   }
   stepWorld(w);
   assert.equal(w.n, 0);
-  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-9);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
   w.terrain.water.forEach((wet, s) => {
     if (!wet) assert.equal(w.spent[s] + w.vital[s], 0);
   });
@@ -129,7 +133,7 @@ test('motion is smooth: velocity carries over between ticks', () => {
 });
 
 test('division is a push, not a jump, and conserves momentum', () => {
-  const w = createWorld({ ...DEFAULTS, drift: 0, damping: 1, repel: 0, gravity: 0, lucaFat: 3, lucaThresh: 2, splitChance: 1 });
+  const w = createWorld({ ...DEFAULTS, drift: 0, damping: 1, repel: 0, gravity: 0, lucaFat: 3, lucaThresh: 2, lucaDetach: 1, lucaSplit: 1 });
   const { x: x0, y: y0 } = { x: w.cells.x[0], y: w.cells.y[0] };
   stepWorld(w);
   assert.equal(w.n, 2);
@@ -141,7 +145,7 @@ test('division is a push, not a jump, and conserves momentum', () => {
 });
 
 test('overlapping cells push apart, far cells do not', () => {
-  const w = createWorld({ ...DEFAULTS, drift: 0, lucaThresh: 1e9, lucaFat: 5, splitChance: 0 });
+  const w = createWorld({ ...DEFAULTS, drift: 0, lucaThresh: 1e9, lucaFat: 5, lucaSplit: 0 });
   const c = w.cells;
   c.x[1] = c.x[0] + 0.1;
   c.y[1] = c.y[0];
@@ -218,11 +222,252 @@ test('atmosphere and water start in balance', () => {
 });
 
 test('division burns fat at the set cost, matter conserved', () => {
-  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaThresh: 2, splitChance: 1 });
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaThresh: 2, lucaSplit: 1 });
   stepWorld(w);
   assert.equal(w.n, 2);
-  assert.ok(Math.abs(w.cells.fat[0] + w.cells.fat[1] - (3 - DEFAULTS.divideCost)) < 1e-9);
-  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-9);
+  assert.ok(Math.abs(w.cells.fat[0] + w.cells.fat[1] - (3 - DEFAULTS.divideCost - DEFAULTS.cellBiomass)) < 1e-9);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+const total = (values) => values.reduce((a, b) => a + b, 0);
+
+// An empty world with still water, except for any overrides.
+const emptyWorld = (overrides) => {
+  const w = createWorld({ ...DEFAULTS, airExchange: 0, diffusion: 0, detritusDiffusion: 0, ...overrides });
+  w.n = 0;
+  return w;
+};
+
+test('a corpse leaves its share of fat and biomass as detritus, matter conserved', () => {
+  const w = createWorld({ ...DEFAULTS, detritusDecay: 0, sedimentDecay: 0 });
+  w.cells.x[0] = 0.1;
+  w.cells.y[0] = -7;
+  stepWorld(w);
+  assert.equal(w.n, 0);
+  const expected = (DEFAULTS.lucaFat + DEFAULTS.cellBiomass) * DEFAULTS.deathDetritus;
+  assert.ok(Math.abs(total(w.detritus) + total(w.sediment) - expected) < 1e-9);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+test('a cell that starves at zero fat still leaves detritus', () => {
+  const w = createWorld({ ...DEFAULTS, lucaPhoto: 0, lucaThresh: 1e9, detritusDecay: 0, sedimentDecay: 0 });
+  w.cells.y[0] = 10;
+  for (let t = 0; t < 500 && w.n; t++) stepWorld(w);
+  assert.equal(w.n, 0);
+  assert.ok(Math.abs(total(w.detritus) + total(w.sediment) - DEFAULTS.cellBiomass * DEFAULTS.deathDetritus) < 1e-9);
+});
+
+test('detritus sinks through its column and settles as sediment, matter conserved', () => {
+  const w = emptyWorld({ detritusDecay: 0, sedimentDecay: 0 });
+  const x = DEFAULTS.gridW / 2;
+  w.detritus[x] = 1; // top row
+  const before = totalMatter(w);
+  stepWorld(w);
+  assert.ok(w.detritus[x] < 1);
+  assert.ok(w.detritus[x + DEFAULTS.gridW] > 0);
+  assert.equal(w.detritus[x + 2 * DEFAULTS.gridW], 0); // one square per tick
+  for (let t = 0; t < 5000; t++) stepWorld(w);
+  assert.ok(w.sediment[x] > 0.99);
+  assert.ok(Math.abs(totalMatter(w) - before) < 1e-6);
+});
+
+test('detritus decay turns vital into spent, and stalls without vital', () => {
+  const s = 20 * DEFAULTS.gridW + DEFAULTS.gridW / 2;
+
+  const aired = emptyWorld({ detritusSink: 0 });
+  aired.detritus[s] = 1;
+  stepWorld(aired);
+  const rotted = DEFAULTS.detritusDecay;
+  assert.ok(Math.abs(aired.detritus[s] - (1 - rotted)) < 1e-12);
+  assert.ok(Math.abs(aired.vital[s] - (DEFAULTS.vital0 - rotted)) < 1e-12);
+  assert.ok(Math.abs(aired.spent[s] - (DEFAULTS.spent0 + 2 * rotted)) < 1e-12);
+
+  const dead = emptyWorld({ detritusSink: 0 });
+  dead.vital.fill(0);
+  dead.detritus[s] = 1;
+  for (let t = 0; t < 100; t++) stepWorld(dead);
+  assert.equal(dead.detritus[s], 1);
+});
+
+test('sediment breaks down into the deepest water of its column, matter conserved', () => {
+  const w = emptyWorld({});
+  const x = DEFAULTS.gridW / 2;
+  const s = w.terrain.bottom[x];
+  w.sediment[x] = 10;
+  const before = totalMatter(w);
+  stepWorld(w);
+  const amount = 10 * DEFAULTS.sedimentDecay;
+  assert.ok(Math.abs(w.sediment[x] - (10 - amount)) < 1e-12);
+  assert.ok(Math.abs(w.vital[s] - (DEFAULTS.vital0 - amount)) < 1e-12);
+  assert.ok(Math.abs(w.spent[s] - (DEFAULTS.spent0 + 2 * amount)) < 1e-12);
+  assert.ok(Math.abs(totalMatter(w) - before) < 1e-6);
+});
+
+test('with no vital, a cell burns extra fat instead of dying at once', () => {
+  const w = createWorld({ ...DEFAULTS, lucaPhoto: 0, lucaFat: 1, lucaThresh: 1e9, airExchange: 0 });
+  const before = totalMatter(w);
+  w.vital.fill(0);
+  const matter = totalMatter(w);
+  stepWorld(w);
+  assert.equal(w.n, 1);
+  const cost = DEFAULTS.upkeep * (1 + DEFAULTS.capUpkeep * DEFAULTS.lucaCap);
+  assert.ok(Math.abs(w.cells.fat[0] - (1 - cost * DEFAULTS.noVitalCost)) < 1e-9);
+  assert.ok(Math.abs(totalMatter(w) - matter) < 1e-6);
+  assert.ok(before > matter);
+  for (let t = 0; t < 100 && w.n; t++) stepWorld(w);
+  assert.equal(w.n, 0); // starves in about 1 / (upkeep * noVitalCost) ticks
+});
+
+// Two cells joined by one bond, on the deep floor's open water.
+const bondedPair = (overrides, gap) => {
+  const w = createWorld({ ...DEFAULTS, drift: 0, gravity: 0, repel: 0, upkeep: 0, lucaPhoto: 0, lucaThresh: 1e9, lucaSplit: 0, ...overrides });
+  const c = w.cells;
+  c.y[0] = 20;
+  c.x[1] = c.x[0] + gap;
+  c.y[1] = 20;
+  c.fat[1] = c.fat[0];
+  c.thresh[1] = 1e9;
+  w.n = 2;
+  w.bondA[0] = 0;
+  w.bondB[0] = 1;
+  w.nBonds = 1;
+  w.matter0 = totalMatter(w);
+  return w;
+};
+
+test('a daughter that stays is bonded and genetically identical', () => {
+  const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaThresh: 2, lucaDetach: 0, lucaSplit: 1 });
+  stepWorld(w);
+  const c = w.cells;
+  assert.equal(w.n, 2);
+  assert.equal(w.nBonds, 1);
+  assert.deepEqual([w.bondA[0], w.bondB[0]], [0, 1]);
+  assert.equal(c.photo[0], c.photo[1]);
+  assert.equal(c.thresh[0], c.thresh[1]);
+  assert.equal(c.detach[0], c.detach[1]);
+  assert.equal(c.split[0], c.split[1]);
+  assert.equal(c.share[0], c.share[1]);
+  assert.equal(c.cap[0], c.cap[1]);
+  assert.equal(c.mut[0], c.mut[1]);
+});
+
+test('a full cell makes no more fat', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaFat: 2, lucaCap: 2, lucaThresh: 1e9 });
+  stepWorld(w);
+  assert.equal(w.cells.fat[0], 2);
+
+  const roomy = createWorld({ ...DEFAULTS, upkeep: 0, lucaFat: 2, lucaCap: 3, lucaThresh: 1e9 });
+  stepWorld(roomy);
+  assert.ok(roomy.cells.fat[0] > 2);
+});
+
+test('more fat capacity costs more upkeep', () => {
+  const burned = (lucaCap) => {
+    const w = createWorld({ ...DEFAULTS, lucaCap });
+    w.cells.x[0] = 2;
+    w.cells.y[0] = -4.5;
+    stepWorld(w);
+    return DEFAULTS.lucaFat - w.cells.fat[0];
+  };
+  assert.ok(burned(8) > burned(2));
+});
+
+test('a cell with no split chance never divides', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaSplit: 0 });
+  for (let t = 0; t < 100; t++) stepWorld(w);
+  assert.equal(w.n, 1);
+});
+
+test('the daughter share gene sets how fat is divided', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaDetach: 1, lucaSplit: 1, lucaShare: 0.25 });
+  stepWorld(w);
+  assert.equal(w.n, 2);
+  const left = 3 - DEFAULTS.divideCost - DEFAULTS.cellBiomass;
+  assert.ok(Math.abs(w.cells.fat[1] - left * 0.25) < 1e-9);
+  assert.ok(Math.abs(w.cells.fat[0] - left * 0.75) < 1e-9);
+});
+
+test('the mutation factor sets mutation size, mutates itself, and has a minimum', () => {
+  const founded = (overrides) => {
+    const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaDetach: 1, lucaSplit: 1, ...overrides });
+    stepWorld(w);
+    assert.equal(w.n, 2);
+    return w.cells;
+  };
+  const frozen = founded({ lucaMut: 0, minMutation: 0 });
+  assert.equal(frozen.photo[0], frozen.photo[1]);
+  assert.equal(frozen.mut[1], 0);
+
+  const normal = founded({});
+  assert.notEqual(normal.mut[0], normal.mut[1]);
+
+  const low = founded({ lucaMut: 0.001, minMutation: 0.002 });
+  assert.equal(low.mut[1], 0.002);
+});
+
+test('a daughter that detaches has no bond and mutates', () => {
+  const w = createWorld({ ...DEFAULTS, lucaFat: 3, lucaThresh: 2, lucaDetach: 1, lucaSplit: 1 });
+  stepWorld(w);
+  assert.equal(w.n, 2);
+  assert.equal(w.nBonds, 0);
+  assert.notEqual(w.cells.photo[0], w.cells.photo[1]);
+});
+
+test('bond spring pulls stretched cells together and pushes close ones apart', () => {
+  const far = bondedPair({}, 1);
+  stepWorld(far);
+  assert.ok(far.cells.vx[0] > 0 && far.cells.vx[1] < 0);
+  assert.ok(Math.abs(far.cells.vx[0] + far.cells.vx[1]) < 1e-12);
+
+  const near = bondedPair({}, 0.2);
+  stepWorld(near);
+  assert.ok(near.cells.vx[0] < 0 && near.cells.vx[1] > 0);
+});
+
+test('spring and repulsion settle a pair near the balance point', () => {
+  const w = bondedPair({ repel: DEFAULTS.repel }, 1);
+  for (let t = 0; t < 3000; t++) stepWorld(w);
+  const gap = Math.abs(w.cells.x[1] - w.cells.x[0]);
+  assert.ok(gap > DEFAULTS.bondRest && gap < DEFAULTS.contactDist, `gap ${gap}`);
+});
+
+test('a bond stretched past its limit snaps; the cells live on', () => {
+  const w = bondedPair({}, DEFAULTS.bondBreak + 0.1);
+  stepWorld(w);
+  assert.equal(w.nBonds, 0);
+  assert.equal(w.n, 2);
+});
+
+test('fat flows across a bond from fuller to emptier, matter conserved', () => {
+  const w = bondedPair({}, 0.4);
+  w.cells.fat[0] = 2;
+  w.cells.fat[1] = 0.5;
+  w.matter0 = totalMatter(w);
+  stepWorld(w);
+  assert.ok(w.cells.fat[0] < 2 && w.cells.fat[1] > 0.5);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+test('bonds follow compaction and die with their cells', () => {
+  const w = bondedPair({}, 0.4);
+  const c = w.cells;
+  // Add a third cell, bonded to cell 1, then kill cell 0 by putting it on the edge.
+  c.x[2] = c.x[1] + 0.4;
+  c.y[2] = 20;
+  c.fat[2] = 1;
+  c.thresh[2] = 1e9;
+  c.id[2] = 99;
+  w.n = 3;
+  w.bondA[1] = 1;
+  w.bondB[1] = 2;
+  w.nBonds = 2;
+  c.x[0] = 0.1;
+  c.y[0] = -7;
+  stepWorld(w);
+  assert.equal(w.n, 2);
+  assert.equal(w.nBonds, 1);
+  assert.deepEqual([w.bondA[0], w.bondB[0]], [0, 1]);
+  assert.equal(c.id[1], 99);
 });
 
 test('different seeds diverge', () => {

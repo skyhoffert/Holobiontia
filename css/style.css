@@ -67,6 +67,12 @@ button:hover { border-color: var(--accent); }
 
 dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
 dt { color: var(--dim); }
+dt.section {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  color: var(--text);
+  font-weight: 600;
+}
 dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 dd.dead { color: #e0705f; font-weight: 600; }
 

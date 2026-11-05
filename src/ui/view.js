@@ -4,10 +4,15 @@ export const OVERLAYS = {
   light: { tint: [90, 170, 230], max: 2, gamma: 0.5 }, // gamma keeps dim light under canopies visible
   vital: { tint: [120, 220, 200], max: 3, gamma: 1 },
   spent: { tint: [210, 150, 90], max: 4, gamma: 1 },
+  detritus: { tint: [190, 160, 110], max: 0.3, gamma: 0.5 }, // gamma keeps thin marine snow visible
 };
 export const WATER = [12, 22, 32];
 const SKY = '#25313c';
 const ROCK = '#4a4a44';
+const BOND = '#d8f0b8';
+const SEDIMENT = '#7d6a4a';
+const SEDIMENT_SCALE = 0.5; // squares of drawn thickness per unit
+const SEDIMENT_MAX = 2;
 
 // Position along an overlay's colour scale, 0..1.
 const scaleAt = (style, value) => Math.min(1, value / style.max) ** style.gamma;
@@ -24,6 +29,7 @@ const cellColor = (photo) => `hsl(115 ${25 + 70 * Math.sqrt(photo)}% ${40 + 30 *
 
 const MAX_ZOOM = 30;
 const WHEEL_SPEED = 0.0015;
+const FOCUS_MARGIN = 6; // squares of space around a focused organism
 const DRAG_PX = 4; // CSS px of movement before a press counts as a drag
 
 // onTap(cssX, cssY) fires for a press without a drag.
@@ -136,6 +142,21 @@ export function createView(canvas, onTap) {
     ctx.fill();
   }
 
+  // A band drawn down into the rock: sediment has no physical height, so cells rest on top of it.
+  // Each corner averages its two columns, which softens spikes.
+  function drawSediment({ gridW, heights, sediment }) {
+    const lower = (x) => {
+      const units = (sediment[Math.max(0, x - 1)] + sediment[Math.min(gridW - 1, x)]) / 2;
+      return heights[x] + Math.min(SEDIMENT_MAX, units * SEDIMENT_SCALE);
+    };
+    ctx.fillStyle = SEDIMENT;
+    ctx.beginPath();
+    ctx.moveTo(0, heights[0]);
+    heights.forEach((h, x) => ctx.lineTo(x, h));
+    for (let x = gridW; x >= 0; x--) ctx.lineTo(x, lower(x));
+    ctx.fill();
+  }
+
   function draw(snap, overlay, selectedId) {
     grid = snap;
     const { scale, ox, oy } = layout(snap);
@@ -146,19 +167,56 @@ export function createView(canvas, onTap) {
     ctx.fillRect(0, -snap.skyRows, snap.gridW, snap.skyRows);
     drawField(snap, overlay);
     drawTerrain(snap);
+    drawSediment(snap);
 
     const { x, y, fat, photo, id } = snap.cells;
+
+    ctx.strokeStyle = BOND;
+    ctx.lineWidth = 0.08;
+    ctx.beginPath();
+    for (let k = 0; k < snap.bondA.length; k++) {
+      ctx.moveTo(x[snap.bondA[k]], y[snap.bondA[k]]);
+      ctx.lineTo(x[snap.bondB[k]], y[snap.bondB[k]]);
+    }
+    ctx.stroke();
+
     for (let i = 0; i < snap.n; i++) {
       ctx.fillStyle = cellColor(photo[i]);
       ctx.beginPath();
       ctx.arc(x[i], y[i], cellRadius(fat[i]), 0, Math.PI * 2);
       ctx.fill();
-      if (id[i] === selectedId) {
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 0.08;
-        ctx.stroke();
-      }
     }
+    drawSelection(snap, selectedId);
+  }
+
+  // Outlines the selected organism on top of the crowd, with the selected cell thickest.
+  function drawSelection(snap, selectedId) {
+    const { x, y, fat, id } = snap.cells;
+    const selected = id.indexOf(selectedId);
+    if (selected < 0) return;
+    const { roots } = snap.organisms;
+    const root = roots[selected];
+    const outline = (i) => {
+      const r = cellRadius(fat[i]);
+      ctx.moveTo(x[i] + r, y[i]);
+      ctx.arc(x[i], y[i], r, 0, Math.PI * 2);
+    };
+
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 0.04;
+    ctx.beginPath();
+    for (let k = 0; k < snap.bondA.length; k++) {
+      if (roots[snap.bondA[k]] !== root) continue;
+      ctx.moveTo(x[snap.bondA[k]], y[snap.bondA[k]]);
+      ctx.lineTo(x[snap.bondB[k]], y[snap.bondB[k]]);
+    }
+    for (let i = 0; i < snap.n; i++) if (roots[i] === root) outline(i);
+    ctx.stroke();
+
+    ctx.lineWidth = 0.1;
+    ctx.beginPath();
+    outline(selected);
+    ctx.stroke();
   }
 
   // Returns id of nearest cell near a CSS-pixel point, or null.
@@ -178,5 +236,31 @@ export function createView(canvas, onTap) {
     return best;
   }
 
-  return { draw, pick };
+  // Zoom and pan to fit the given cells in view, with some margin. Returns the cell
+  // index nearest their centre.
+  function focus(snap, indices) {
+    const { x, y } = snap.cells;
+    const xs = indices.map((i) => x[i]);
+    const ys = indices.map((i) => y[i]);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    const fit = Math.min(
+      canvas.width / (maxX - minX + FOCUS_MARGIN),
+      canvas.height / (maxY - minY + FOCUS_MARGIN),
+    );
+    zoom = Math.min(MAX_ZOOM, Math.max(1, fit / baseScale(snap)));
+    const scale = baseScale(snap) * zoom;
+    panX = scale * (snap.gridW / 2 - cx);
+    panY = canvas.height / 2 - cy * scale - surfaceY(snap, scale);
+
+    const dist = (i) => (x[i] - cx) ** 2 + (y[i] - cy) ** 2;
+    return indices.reduce((best, i) => (dist(i) < dist(best) ? i : best));
+  }
+
+  return { draw, pick, focus };
 }
