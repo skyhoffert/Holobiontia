@@ -1,9 +1,9 @@
-import { GENE_SCALE, SAVE_VERSION, geneDistance } from './config.js';
+import { GENE_SCALE, SAVE_VERSION, geneDistance, traitLoad } from './config.js';
 import { createRng } from './rng.js';
 import { createTerrain, isOpen } from './terrain.js';
 
 const GENE_KEYS = Object.keys(GENE_SCALE);
-const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'wear', 'id', 'born', 'species', ...GENE_KEYS];
+const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'biomass', 'wear', 'id', 'born', 'species', ...GENE_KEYS];
 const NEIGHBORS = [[1, 0], [-1, 1], [0, 1], [1, 1]];
 
 export function createWorld(cfg) {
@@ -50,10 +50,11 @@ export function createWorld(cfg) {
     stiff: cfg.lucaStiff,
     strength: cfg.lucaStrength,
     perm: cfg.lucaPerm,
+    digest: cfg.lucaDigest,
     mut: cfg.lucaMut,
   };
   w.species.push({ genes: luca, parent: -1, born: 0 });
-  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, luca, 0);
+  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, luca, 0, buildCost(cfg, luca));
   w.matter0 = totalMatter(w);
   computeLight(w);
   return w;
@@ -108,6 +109,9 @@ export function loadWorld(data, cfg) {
   w.matter0 = data.matter0;
   w.air = { ...data.air };
   w.species = data.species;
+  data.cells.biomass ??= new Array(data.n).fill(cfg.cellBiomass); // saves from before build costs
+  data.cells.digest ??= new Array(data.n).fill(0); // saves from before digestion
+  for (const { genes } of data.species) genes.digest ??= 0;
   for (const k of CELL_KEYS) w.cells[k].set(data.cells[k]);
   for (const k of FIELD_KEYS) w[k].set(data.fields[k]);
   w.nBonds = data.bondA.length;
@@ -119,14 +123,25 @@ export function loadWorld(data, cfg) {
 
 // Conservation invariant: must stay equal to w.matter0.
 export function totalMatter(w) {
-  let sum = w.air.vital + w.air.spent + w.n * w.cfg.cellBiomass;
+  let sum = w.air.vital + w.air.spent;
   for (let i = 0; i < w.vital.length; i++) sum += w.vital[i] + w.spent[i] + w.detritus[i];
   for (let i = 0; i < w.sediment.length; i++) sum += w.sediment[i];
-  for (let i = 0; i < w.n; i++) sum += w.cells.fat[i];
+  for (let i = 0; i < w.n; i++) sum += w.cells.fat[i] + w.cells.biomass[i];
   return sum;
 }
 
-function spawn(w, x, y, fat, genes, species) {
+// Fat locked into the body of a new cell with these genes.
+function buildCost(cfg, genes) {
+  return cfg.cellBiomass
+    + cfg.photoBuild * genes.photo
+    + cfg.capBuild * genes.cap
+    + cfg.stiffBuild * genes.stiff
+    + cfg.strengthBuild * genes.strength
+    + cfg.permBuild * genes.perm
+    + cfg.digestBuild * genes.digest;
+}
+
+function spawn(w, x, y, fat, genes, species, biomass) {
   const c = w.cells;
   const i = w.n++;
   c.x[i] = x;
@@ -134,6 +149,7 @@ function spawn(w, x, y, fat, genes, species) {
   c.vx[i] = 0;
   c.vy[i] = 0;
   c.fat[i] = fat;
+  c.biomass[i] = biomass;
   for (const k of GENE_KEYS) c[k][i] = genes[k];
   c.wear[i] = 0;
   c.id[i] = w.nextId++;
@@ -179,7 +195,8 @@ function upkeepCost(w, i) {
     + cfg.capUpkeep * c.cap[i]
     + cfg.stiffUpkeep * c.stiff[i]
     + cfg.strengthUpkeep * c.strength[i]
-    + cfg.permUpkeep * c.perm[i]);
+    + cfg.permUpkeep * c.perm[i]
+    + cfg.digestUpkeep * c.digest[i]);
 }
 
 function stepCells(w) {
@@ -219,8 +236,14 @@ function stepWet(w, i) {
   w.vital[s] += made;
   c.fat[i] += made;
 
+  // Digestion: detritus -> fat, paid for by respiring extra fat. Only what's digested leaves the
+  // square: the undigested remainder would be released right back as detritus.
+  const eaten = Math.min(c.digest[i] * cfg.digestRate * w.detritus[s] * efficiency(w, i), room - made);
+  w.detritus[s] -= eaten;
+  c.fat[i] += eaten;
+
   // Respiration: 1 fat + 1 vital -> 2 spent
-  const cost = upkeepCost(w, i);
+  const cost = upkeepCost(w, i) + cfg.digestCost * eaten;
   const breathed = Math.min(cost, c.fat[i], w.vital[s]);
   c.fat[i] -= breathed;
   w.vital[s] -= breathed;
@@ -255,9 +278,9 @@ function toSpent(w, s, amount) {
 
 // A corpse's fat and biomass split into detritus and spent.
 function kill(w, i) {
-  const { cells: { fat }, cfg } = w;
+  const { cells: { fat, biomass }, cfg } = w;
   const s = exchangeSquare(w, i);
-  const matter = fat[i] + cfg.cellBiomass;
+  const matter = fat[i] + biomass[i];
   const remains = matter * cfg.deathDetritus;
   w.detritus[s] += remains;
   toSpent(w, s, matter - remains);
@@ -269,7 +292,7 @@ function mutatedGenes(w, i) {
   const { cells: c, cfg, rand } = w;
   const nudge = (key, min, max) =>
     Math.min(max, Math.max(min, c[key][i] + (rand() + rand() - 1) * c.mut[i] * GENE_SCALE[key]));
-  return {
+  return fitCapacity(cfg, {
     photo: nudge('photo', 0, 1),
     thresh: nudge('thresh', cfg.minThresh, Infinity),
     detach: nudge('detach', 0, 1),
@@ -279,8 +302,23 @@ function mutatedGenes(w, i) {
     stiff: nudge('stiff', 0, cfg.maxTrait),
     strength: nudge('strength', 0, cfg.maxTrait),
     perm: nudge('perm', 0, cfg.maxTrait),
+    digest: nudge('digest', 0, 1),
     mut: nudge('mut', cfg.minMutation, Infinity),
-  };
+  });
+}
+
+// Over budget: every body trait shrinks in proportion, so gaining one means giving up others.
+function fitCapacity(cfg, genes) {
+  const load = traitLoad(cfg, genes);
+  if (load <= cfg.traitCapacity) return genes;
+  const k = cfg.traitCapacity / load;
+  genes.photo *= k;
+  genes.stiff *= k;
+  genes.strength *= k;
+  genes.perm *= k;
+  genes.digest *= k;
+  genes.cap = cfg.minThresh + (genes.cap - cfg.minThresh) * k;
+  return genes;
 }
 
 // NEAT-style: join the parent's species if close to its representative, else found a new one.
@@ -292,20 +330,22 @@ function assignSpecies(w, parent, genes) {
 
 function divide(w, i) {
   const { cells: c, cfg, rand } = w;
-  c.fat[i] -= cfg.divideCost + cfg.cellBiomass; // burned, and locked into the daughter's body
+  const detached = rand() < c.detach[i] || w.nBonds >= w.bondA.length;
+  // A detached daughter is a new organism: mutation happens only here. One that stays is the
+  // same organism: identical genes, joined by a bond.
+  const genes = detached ? mutatedGenes(w, i) : Object.fromEntries(GENE_KEYS.map((k) => [k, c[k][i]]));
+  const biomass = buildCost(cfg, genes);
+  if (c.fat[i] <= cfg.divideCost + biomass) return; // can't afford this daughter
+
+  c.fat[i] -= cfg.divideCost + biomass; // burned, and locked into the daughter's body
   toSpent(w, square(w, i), cfg.divideCost);
   const share = c.fat[i] * c.share[i];
   c.fat[i] -= share;
   c.wear[i] += cfg.wearDivide;
   const d = w.n;
-  const detached = rand() < c.detach[i] || w.nBonds >= w.bondA.length;
-  if (detached) {
-    // A new organism: mutation happens only here.
-    const genes = mutatedGenes(w, i);
-    spawn(w, c.x[i], c.y[i], share, genes, assignSpecies(w, c.species[i], genes));
-  } else {
-    // Same organism: identical genes, joined by a bond.
-    spawn(w, c.x[i], c.y[i], share, Object.fromEntries(GENE_KEYS.map((k) => [k, c[k][i]])), c.species[i]);
+  const species = detached ? assignSpecies(w, c.species[i], genes) : c.species[i];
+  spawn(w, c.x[i], c.y[i], share, genes, species, biomass);
+  if (!detached) {
     w.bondA[w.nBonds] = i;
     w.bondB[w.nBonds] = d;
     w.nBonds++;
@@ -466,9 +506,10 @@ function exchangeAir(w, gas) {
 }
 
 // Decay: 1 detritus + 1 vital -> 2 spent, so without vital it just piles up.
-// Sinking runs bottom-up so matter moves one square per tick; the last square drops into sediment.
+// Sinking runs bottom-up so matter moves one square per tick. In the last square it collects as
+// a layer on the floor, still edible, and is only slowly buried as sediment.
 function stepDetritus(w) {
-  const { gridW: W, gridH: H, detritusDecay, detritusSink } = w.cfg;
+  const { gridW: W, gridH: H, detritusDecay, detritusSink, detritusBury } = w.cfg;
   const { detritus, vital, spent, sediment } = w;
   const { water, bottom } = w.terrain;
   for (let y = H - 1; y >= 0; y--) {
@@ -478,10 +519,11 @@ function stepDetritus(w) {
       const rotted = Math.min(detritusDecay * detritus[s], vital[s]);
       vital[s] -= rotted;
       spent[s] += 2 * rotted;
-      const sunk = detritusSink * (detritus[s] - rotted);
-      detritus[s] -= rotted + sunk;
-      if (s === bottom[x]) sediment[x] += sunk;
-      else detritus[s + W] += sunk;
+      const onFloor = s === bottom[x];
+      const left = (onFloor ? detritusBury : detritusSink) * (detritus[s] - rotted);
+      detritus[s] -= rotted + left;
+      if (onFloor) sediment[x] += left;
+      else detritus[s + W] += left;
     }
   }
 }

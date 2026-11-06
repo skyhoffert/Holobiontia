@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DEFAULTS, GENE_SCALE, KNOBS, geneDistance } from '../src/sim/config.js';
+import { DEFAULTS, GENE_SCALE, KNOBS, geneDistance, traitLoad } from '../src/sim/config.js';
 import { createWorld, loadWorld, saveWorld, stepWorld, totalMatter } from '../src/sim/world.js';
 
 const run = (ticks, overrides = {}) => {
@@ -231,7 +231,7 @@ test('division burns fat at the set cost, matter conserved', () => {
   const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaThresh: 2, lucaSplit: 1 });
   stepWorld(w);
   assert.equal(w.n, 2);
-  assert.ok(Math.abs(w.cells.fat[0] + w.cells.fat[1] - (3 - DEFAULTS.divideCost - DEFAULTS.cellBiomass)) < 1e-9);
+  assert.ok(Math.abs(w.cells.fat[0] + w.cells.fat[1] - (3 - DEFAULTS.divideCost - w.cells.biomass[1])) < 1e-9);
   assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
 });
 
@@ -248,9 +248,9 @@ test('a corpse leaves its share of fat and biomass as detritus, matter conserved
   const w = createWorld({ ...DEFAULTS, detritusDecay: 0, sedimentDecay: 0 });
   w.cells.x[0] = 0.1;
   w.cells.y[0] = -7;
+  const expected = (DEFAULTS.lucaFat + w.cells.biomass[0]) * DEFAULTS.deathDetritus;
   stepWorld(w);
   assert.equal(w.n, 0);
-  const expected = (DEFAULTS.lucaFat + DEFAULTS.cellBiomass) * DEFAULTS.deathDetritus;
   assert.ok(Math.abs(total(w.detritus) + total(w.sediment) - expected) < 1e-9);
   assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
 });
@@ -258,13 +258,14 @@ test('a corpse leaves its share of fat and biomass as detritus, matter conserved
 test('a cell that starves at zero fat still leaves detritus', () => {
   const w = createWorld({ ...DEFAULTS, lucaPhoto: 0, lucaThresh: 1e9, detritusDecay: 0, sedimentDecay: 0 });
   w.cells.y[0] = 10;
+  const biomass = w.cells.biomass[0];
   for (let t = 0; t < 500 && w.n; t++) stepWorld(w);
   assert.equal(w.n, 0);
-  assert.ok(Math.abs(total(w.detritus) + total(w.sediment) - DEFAULTS.cellBiomass * DEFAULTS.deathDetritus) < 1e-9);
+  assert.ok(Math.abs(total(w.detritus) + total(w.sediment) - biomass * DEFAULTS.deathDetritus) < 1e-9);
 });
 
 test('detritus sinks through its column and settles as sediment, matter conserved', () => {
-  const w = emptyWorld({ detritusDecay: 0, sedimentDecay: 0 });
+  const w = emptyWorld({ detritusSink: 0.05, detritusBury: 0.05, detritusDecay: 0, sedimentDecay: 0 });
   const x = DEFAULTS.gridW / 2;
   w.detritus[x] = 1; // top row
   const before = totalMatter(w);
@@ -275,6 +276,24 @@ test('detritus sinks through its column and settles as sediment, matter conserve
   for (let t = 0; t < 5000; t++) stepWorld(w);
   assert.ok(w.sediment[x] > 0.99);
   assert.ok(Math.abs(totalMatter(w) - before) < 1e-6);
+});
+
+test('detritus collects in a layer on the floor before slowly becoming sediment', () => {
+  const x = DEFAULTS.gridW / 2;
+  const settling = emptyWorld({ detritusSink: 0.5, detritusBury: 0, detritusDecay: 0, sedimentDecay: 0 });
+  const floor = settling.terrain.bottom[x];
+  settling.detritus[x] = 1; // top row
+  for (let t = 0; t < 500; t++) stepWorld(settling);
+  assert.ok(settling.detritus[floor] > 0.99);
+  assert.equal(settling.sediment[x], 0);
+
+  const burying = emptyWorld({ detritusDecay: 0, sedimentDecay: 0 });
+  burying.detritus[floor] = 1;
+  const before = totalMatter(burying);
+  stepWorld(burying);
+  assert.ok(Math.abs(burying.sediment[x] - DEFAULTS.detritusBury) < 1e-12);
+  assert.ok(Math.abs(burying.detritus[floor] - (1 - DEFAULTS.detritusBury)) < 1e-12);
+  assert.ok(Math.abs(totalMatter(burying) - before) < 1e-6);
 });
 
 test('detritus decay turns vital into spent, and stalls without vital', () => {
@@ -348,8 +367,8 @@ test('with no vital, a cell burns extra fat instead of dying at once', () => {
   assert.ok(Math.abs(w.cells.fat[0] - (1 - cost * DEFAULTS.noVitalCost)) < 1e-9);
   assert.ok(Math.abs(totalMatter(w) - matter) < 1e-6);
   assert.ok(before > matter);
-  for (let t = 0; t < 100 && w.n; t++) stepWorld(w);
-  assert.equal(w.n, 0); // starves in about 1 / (upkeep * noVitalCost) ticks
+  for (let t = 0; t < 2 / (cost * DEFAULTS.noVitalCost) && w.n; t++) stepWorld(w);
+  assert.equal(w.n, 0); // starves in about 1 / (cost * noVitalCost) ticks
 });
 
 const BOND_GENES = ['stiff', 'strength', 'perm'];
@@ -420,7 +439,7 @@ test('the daughter share gene sets how fat is divided', () => {
   const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 3, lucaDetach: 1, lucaSplit: 1, lucaShare: 0.25 });
   stepWorld(w);
   assert.equal(w.n, 2);
-  const left = 3 - DEFAULTS.divideCost - DEFAULTS.cellBiomass;
+  const left = 3 - DEFAULTS.divideCost - w.cells.biomass[1];
   assert.ok(Math.abs(w.cells.fat[1] - left * 0.25) < 1e-9);
   assert.ok(Math.abs(w.cells.fat[0] - left * 0.75) < 1e-9);
 });
@@ -652,9 +671,180 @@ test('knob defaults sit inside their hard limits', () => {
   }
 });
 
-test('hard limits keep division from pushing fat negative', () => {
-  const limit = (key, field) => KNOBS.find((k) => k.key === key)[field];
-  assert.ok(limit('divideCost', 'hardMax') + DEFAULTS.cellBiomass < limit('minThresh', 'hardMin'));
+test('a new cell body costs its base plus each body trait', () => {
+  const genes = { lucaPhoto: 0.5, lucaCap: 6, lucaStiff: 2, lucaStrength: 3, lucaPerm: 4, lucaDigest: 0.5 };
+  const w = firstDivision({ lucaFat: 4, lucaDetach: 0, upkeep: 0, ...genes });
+  const { cellBiomass, photoBuild, capBuild, stiffBuild, strengthBuild, permBuild, digestBuild } = DEFAULTS;
+  const expected = cellBiomass + photoBuild * 0.5 + capBuild * 6 + stiffBuild * 2 + strengthBuild * 3 + permBuild * 4 + digestBuild * 0.5;
+  assert.ok(Math.abs(w.cells.biomass[1] - expected) < 1e-12);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+test('a costlier daughter leaves the family less fat', () => {
+  const fatLeft = (lucaStiff) => {
+    const w = firstDivision({ lucaDetach: 0, upkeep: 0, lucaPhoto: 0, lucaStiff });
+    return w.cells.fat[0] + w.cells.fat[1];
+  };
+  assert.ok(fatLeft(4) < fatLeft(1));
+});
+
+test('a parent that cannot afford a daughter does not divide or pay', () => {
+  const w = createWorld({ ...DEFAULTS, upkeep: 0, lucaPhoto: 0, lucaFat: 0.5, lucaThresh: 0.1, lucaSplit: 1, lucaDetach: 1, speciesThreshold: 0 });
+  stepWorld(w);
+  assert.equal(w.n, 1);
+  assert.equal(w.cells.fat[0], 0.5);
+  assert.equal(w.cells.wear[0], 1); // aged only by the tick
+  assert.equal(w.species.length, 1);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+test('a heavily built corpse returns all its matter', () => {
+  const w = createWorld({ ...DEFAULTS, lucaStiff: 5, lucaStrength: 5, lucaPerm: 5 });
+  w.cells.x[0] = 0.1;
+  w.cells.y[0] = -7;
+  stepWorld(w);
+  assert.equal(w.n, 0);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+// The detached daughter's body traits, with this trait capacity.
+const founded = (traitCapacity) => {
+  const c = firstDivision({ lucaDetach: 1, traitCapacity }).cells;
+  return { photo: c.photo[1], cap: c.cap[1], stiff: c.stiff[1], strength: c.strength[1], perm: c.perm[1], digest: c.digest[1] };
+};
+
+test('LUCA starts within its trait capacity', () => {
+  const load = traitLoad(DEFAULTS, { photo: DEFAULTS.lucaPhoto, cap: DEFAULTS.lucaCap, stiff: DEFAULTS.lucaStiff, strength: DEFAULTS.lucaStrength, perm: DEFAULTS.lucaPerm, digest: DEFAULTS.lucaDigest });
+  assert.ok(load < DEFAULTS.traitCapacity);
+});
+
+test('a new organism under capacity keeps its mutated traits', () => {
+  assert.deepEqual(founded(DEFAULTS.traitCapacity), founded(Infinity));
+});
+
+test('a new organism over capacity shrinks all body traits in proportion', () => {
+  const free = founded(Infinity);
+  const capacity = traitLoad(DEFAULTS, free) / 2;
+  const fitted = founded(capacity);
+  assert.ok(Math.abs(traitLoad(DEFAULTS, fitted) - capacity) < 1e-12);
+  for (const k of ['photo', 'stiff', 'strength', 'perm', 'digest']) {
+    assert.ok(Math.abs(fitted[k] - free[k] / 2) < 1e-12, k);
+  }
+  const { minThresh } = DEFAULTS;
+  assert.ok(Math.abs(fitted.cap - minThresh - (free.cap - minThresh) / 2) < 1e-12);
+});
+
+test('zero trait capacity leaves fat capacity at its minimum', () => {
+  const fitted = founded(0);
+  assert.equal(fitted.photo, 0);
+  assert.equal(fitted.stiff, 0);
+  assert.equal(fitted.cap, DEFAULTS.minThresh);
+});
+
+test('a bonded daughter keeps its parent genes even over capacity', () => {
+  const c = firstDivision({ lucaDetach: 0, traitCapacity: 0 }).cells;
+  assert.equal(c.photo[1], c.photo[0]);
+  assert.equal(c.stiff[1], c.stiff[0]);
+  assert.equal(c.cap[1], c.cap[0]);
+});
+
+// One still cell in open water with a square of detritus and nothing else going on.
+const digester = (overrides) => {
+  const w = createWorld({ ...DEFAULTS, drift: 0, gravity: 0, upkeep: 0, lucaPhoto: 0, lucaDigest: 1, lucaThresh: 1e9, lucaSplit: 0, detritusSink: 0, detritusDecay: 0, detritusDiffusion: 0, ...overrides });
+  w.cells.y[0] = 20;
+  const s = 20 * DEFAULTS.gridW + DEFAULTS.gridW / 2;
+  w.detritus[s] = 1;
+  w.matter0 = totalMatter(w);
+  return { w, s };
+};
+
+test('digestion turns detritus into fat, pays in respiration, matter conserved', () => {
+  const { w, s } = digester({});
+  stepWorld(w);
+  const eaten = DEFAULTS.digestRate / (1 + 1 / DEFAULTS.wearHalf);
+  assert.ok(Math.abs(w.detritus[s] - (1 - eaten)) < 1e-12);
+  assert.ok(Math.abs(w.cells.fat[0] - (DEFAULTS.lucaFat + eaten * (1 - DEFAULTS.digestCost))) < 1e-12);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+test('a cell can digest the detritus layer on the floor', () => {
+  const x = DEFAULTS.gridW / 2;
+  const { w } = digester({});
+  const floor = w.terrain.bottom[x];
+  w.detritus.fill(0);
+  w.detritus[floor] = 1;
+  w.cells.y[0] = Math.floor(floor / DEFAULTS.gridW) + 0.5;
+  w.matter0 = totalMatter(w);
+  stepWorld(w);
+  assert.ok(w.detritus[floor] < 1);
+  assert.ok(w.cells.fat[0] > DEFAULTS.lucaFat);
+  assert.ok(Math.abs(totalMatter(w) - w.matter0) < 1e-6);
+});
+
+test('a cell without digestion leaves detritus alone', () => {
+  const { w, s } = digester({ lucaDigest: 0 });
+  stepWorld(w);
+  assert.equal(w.detritus[s], 1);
+  assert.equal(w.cells.fat[0], DEFAULTS.lucaFat);
+});
+
+test('a full cell digests no more', () => {
+  const { w, s } = digester({ lucaFat: 2, lucaCap: 2 });
+  stepWorld(w);
+  assert.equal(w.detritus[s], 1);
+  assert.equal(w.cells.fat[0], 2);
+});
+
+test('digestion costs upkeep', () => {
+  const burned = (lucaDigest) => {
+    const w = createWorld({ ...DEFAULTS, lucaDigest });
+    w.cells.x[0] = 2;
+    w.cells.y[0] = -4.5;
+    stepWorld(w);
+    return DEFAULTS.lucaFat - w.cells.fat[0];
+  };
+  assert.ok(burned(0.5) > burned(0));
+});
+
+test('a cell can live on detritus alone in the dark, and starves without it', () => {
+  const liveOn = (lucaDigest) => {
+    const w = createWorld({ ...DEFAULTS, lucaPhoto: 0, lucaDigest, lucaThresh: 1e9, lucaSplit: 0, detritusSink: 0, detritusDecay: 0 });
+    w.cells.y[0] = 30;
+    w.terrain.water.forEach((wet, s) => { w.detritus[s] = wet; });
+    const before = totalMatter(w);
+    for (let t = 0; t < 1000 && w.n; t++) stepWorld(w);
+    assert.ok(Math.abs(totalMatter(w) - before) < 1e-6);
+    return w.n;
+  };
+  assert.equal(liveOn(1), 1);
+  assert.equal(liveOn(0), 0);
+});
+
+test('digestion mutates within range from zero', () => {
+  const w = firstDivision({ lucaDetach: 1, lucaMut: 10 });
+  assert.equal(w.cells.digest[0], 0);
+  assert.ok(w.cells.digest[1] >= 0 && w.cells.digest[1] <= 1);
+});
+
+test('a save from before digestion loads with no digestion and sane species', () => {
+  const a = run(1000);
+  const data = JSON.parse(JSON.stringify(saveWorld(a)));
+  delete data.cells.digest;
+  for (const { genes } of data.species) delete genes.digest;
+  const b = loadWorld(data, data.cfg);
+  for (let i = 0; i < b.n; i++) assert.equal(b.cells.digest[i], 0);
+  for (const { genes } of b.species) assert.equal(genes.digest, 0);
+  stepWorld(b);
+  assert.ok(Math.abs(totalMatter(b) - b.matter0) < 1e-6);
+});
+
+test('a save from before build costs loads with the base body cost', () => {
+  const a = run(1000);
+  const data = JSON.parse(JSON.stringify(saveWorld(a)));
+  delete data.cells.biomass;
+  const b = loadWorld(data, data.cfg);
+  assert.equal(b.n, a.n);
+  for (let i = 0; i < b.n; i++) assert.equal(b.cells.biomass[i], DEFAULTS.cellBiomass);
 });
 
 test('a loaded save restores the world and continues identically', () => {

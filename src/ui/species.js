@@ -47,6 +47,7 @@ function speciesRow(g, snap, largest) {
     `${g.minX.toFixed(0)}-${g.maxX.toFixed(0)}`,
     diff,
     g.genes.photo.toFixed(3),
+    g.genes.digest.toFixed(3),
   ];
   return `<tr>${cols.map((v) => `<td>${v}</td>`).join('')}</tr>`;
 }
@@ -68,6 +69,7 @@ export function renderSpecies(el, snap) {
         <th title="Leftmost to rightmost cell">X range</th>
         <th title="Genetic distance of mean genes from the largest species">Diff</th>
         <th title="Mean photosynthesis">Photo</th>
+        <th title="Mean detritus digestion">Digest</th>
       </tr></thead>
       <tbody>${list.slice(0, MAX_ROWS).map((g) => speciesRow(g, snap, list[0])).join('')}</tbody>
     </table>${more}`;

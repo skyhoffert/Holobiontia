@@ -4,6 +4,7 @@ const SAMPLE_TICKS = 20;
 const SERIES = [
   { key: 'pop', label: 'cells', color: '#6fd08c', digits: 0 },
   { key: 'photo', label: 'photo', color: '#e0c060', digits: 3 },
+  { key: 'digest', label: 'digest', color: '#c98f5a', digits: 3 },
   { key: 'thresh', label: 'thresh', color: '#e08a6f', digits: 2 },
   { key: 'age', label: 'age', color: '#8fb4e8', digits: 0 },
   { key: 'body', label: 'body', color: '#d59be0', digits: 2 },
@@ -25,11 +26,12 @@ export function createGraph(canvas) {
     if (snap.tick < lastTick) clear(); // a late snapshot from the old world, before a reset or load
     if (snap.tick < lastTick + SAMPLE_TICKS) return;
     lastTick = snap.tick;
-    const { photo, thresh, born, split, share, cap, mut } = snap.cells;
+    const { photo, digest, thresh, born, split, share, cap, mut } = snap.cells;
     points.push({
       tick: snap.tick,
       pop: snap.n,
       photo: mean(photo, snap.n),
+      digest: mean(digest, snap.n),
       thresh: mean(thresh, snap.n),
       age: snap.tick - mean(born, snap.n),
       body: snap.organisms.count ? snap.n / snap.organisms.count : 0,

@@ -47,6 +47,7 @@ function post() {
     tick,
     n,
     playing,
+    cfg,
     gridW: cfg.gridW,
     gridH: cfg.gridH,
     skyRows: cfg.skyRows,

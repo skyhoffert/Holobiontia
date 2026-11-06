@@ -11,6 +11,7 @@ export const GENE_SCALE = {
   stiff: 5,
   strength: 5,
   perm: 5,
+  digest: 1,
   mut: 0.25,
 };
 
@@ -18,6 +19,17 @@ export function geneDistance(a, b) {
   let sum = 0;
   for (const k in GENE_SCALE) sum += ((a[k] - b[k]) / GENE_SCALE[k]) ** 2;
   return Math.sqrt(sum);
+}
+
+// How much of a cell's trait capacity these genes use, weighted by build cost. Fat capacity counts
+// only above its evolvable minimum, which every cell has.
+export function traitLoad(cfg, g) {
+  return cfg.photoBuild * g.photo
+    + cfg.capBuild * Math.max(0, g.cap - cfg.minThresh)
+    + cfg.stiffBuild * g.stiff
+    + cfg.strengthBuild * g.strength
+    + cfg.permBuild * g.perm
+    + cfg.digestBuild * g.digest;
 }
 
 // All rates are per tick. Base unit: one cell's upkeep.
@@ -67,11 +79,12 @@ export const DEFAULTS = {
   spentSink: 0.002,
 
   // Dead matter.
-  cellBiomass: 0.3, // fat locked into each new cell's body; returned at death
+  cellBiomass: 0.3, // fat locked into every new cell's body, before trait build costs; returned at death
   deathDetritus: 0.5, // fraction of a dead cell's matter left as detritus; the rest becomes spent
-  detritusSink: 0.05, // fraction moving down one square per tick
-  detritusDiffusion: 0.02, // stability: keep < 0.25
-  detritusDecay: 0.001, // fraction decaying per tick, limited by local vital
+  detritusSink: 0.004, // fraction moving down one square per tick; slow, so it lingers as food
+  detritusBury: 0.0001, // fraction of the detritus layer on the floor becoming sediment per tick
+  detritusDiffusion: 0.005, // low so it settles into a thin layer: thickness ~ diffusion / sink squares; stability: keep < 0.25
+  detritusDecay: 0.0002, // fraction decaying per tick, limited by local vital
   sedimentDecay: 0.0002, // fraction of a column's sediment breaking down per tick
 
   airExchange: 0.02, // fraction of the water-air difference closed per tick at the surface
@@ -83,20 +96,33 @@ export const DEFAULTS = {
   shade: 2,
   baseAbsorb: 0.02,
 
-  upkeep: 0.01,
+  upkeep: 0.002,
   photoUpkeep: 2, // upkeep multiplier per unit of photosynthesis
   noVitalCost: 3, // fat burned per unit of upkeep not covered by vital
 
   wearDivide: 300, // wear added to the parent at each division
-  divideCost: 0.2, // fat burned at each division; with cellBiomass, keep below minThresh
+  divideCost: 0.2, // fat burned at each division
   minThresh: 1, // lowest fat threshold and fat capacity that can evolve
-  wearHalf: 10000, // wear at which photosynthesis output is halved
+  wearHalf: 25000, // wear at which photosynthesis output is halved
 
   capUpkeep: 0.05, // upkeep multiplier per unit of fat capacity
   stiffUpkeep: 0.02, // upkeep multiplier per unit of stiffness
   strengthUpkeep: 0.03, // upkeep multiplier per unit of bond strength
   permUpkeep: 0.02, // upkeep multiplier per unit of permeability
+  digestUpkeep: 2, // upkeep multiplier per unit of digestion
+  digestRate: 0.1, // fraction of a square's detritus turned into fat per tick at digestion 1; keep <= 1
+  digestCost: 0.25, // fat respired per unit of fat gained from digesting
   maxTrait: 5, // highest stiffness, bond strength or permeability that can evolve
+
+  // Fat locked into a new cell's body per unit of each gene, paid once by the parent.
+  photoBuild: 0.5,
+  capBuild: 0.01,
+  stiffBuild: 0.02,
+  strengthBuild: 0.03,
+  permBuild: 0.02,
+  digestBuild: 0.5,
+  traitCapacity: 0.4, // most trait load a new organism can have; past this its body traits shrink
+
   minMutation: 0.002, // lowest mutation factor that can evolve, so evolution can't freeze
   speciesThreshold: 0.25, // genetic distance from the representative that founds a new species; display only
 
@@ -110,12 +136,12 @@ export const DEFAULTS = {
   lucaStiff: 1,
   lucaStrength: 1,
   lucaPerm: 1,
+  lucaDigest: 0,
   lucaMut: 0.02, // mutation factor
 };
 
 // Live sliders. Keys must exist in DEFAULTS. min and max only set the slider's starting range; typed
 // values can go past them, up to hardMin (default 0) and hardMax (default none), which keep the sim valid.
-// divideCost + cellBiomass must stay below minThresh's hardMin, or dividing could push fat negative.
 export const KNOBS = [
   { key: 'light', label: 'Light', min: 0, max: 2, step: 0.01, hint: 'Sunlight at the surface. More light means more fat made everywhere.' },
   { key: 'lightDepth', label: 'Light depth', min: 0.5, max: 20, step: 0.1, hardMin: 0.01, hint: 'Depth in squares at which light falls to half. Higher lets light reach deeper.' },
@@ -124,20 +150,33 @@ export const KNOBS = [
   { key: 'stiffUpkeep', label: 'Stiffness upkeep', min: 0, max: 0.5, step: 0.01, hint: 'Extra upkeep per unit of the stiffness gene, as a multiple of Upkeep.' },
   { key: 'strengthUpkeep', label: 'Bond strength upkeep', min: 0, max: 0.5, step: 0.01, hint: 'Extra upkeep per unit of the bond strength gene, as a multiple of Upkeep.' },
   { key: 'permUpkeep', label: 'Permeability upkeep', min: 0, max: 0.5, step: 0.01, hint: 'Extra upkeep per unit of the permeability gene, as a multiple of Upkeep.' },
+  { key: 'digestRate', label: 'Digestion rate', min: 0, max: 1, step: 0.01, hardMax: 1, hint: 'Fraction of the detritus in a cell\'s square turned into fat per tick at digestion 1. Higher makes eating detritus more rewarding, and clears it faster.' },
+  { key: 'digestCost', label: 'Digestion energy cost', min: 0, max: 1, step: 0.01, hint: 'Fat respired per unit of fat gained from digesting, using up vital. At 1 or above, digesting gains nothing even with vital.' },
+  { key: 'digestUpkeep', label: 'Digestion upkeep', min: 0, max: 5, step: 0.05, hint: 'Extra upkeep per unit of digestion, as a multiple of Upkeep.' },
+  { key: 'digestBuild', label: 'Digestion build cost', min: 0, max: 2, step: 0.01, hint: 'Extra fat locked into a new cell per unit of digestion. Also how much trait capacity it uses. Applies to births from now on.' },
+  { key: 'traitCapacity', label: 'Trait capacity', min: 0, max: 2, step: 0.01, hint: 'Budget for body traits, measured in build cost. A new organism over budget has all its body traits shrunk in proportion, so gaining one means giving up others. Raising a build cost also makes that trait use more of the budget. Applies to births from now on.' },
+  { key: 'cellBiomass', label: 'Base body cost', min: 0, max: 2, step: 0.01, hint: 'Fat locked into every new cell before trait costs, paid once by the parent. Returned to the world at death. Applies to births from now on.' },
+  { key: 'photoBuild', label: 'Photosynthesis build cost', min: 0, max: 2, step: 0.01, hint: 'Extra fat locked into a new cell per unit of photosynthesis. Applies to births from now on.' },
+  { key: 'capBuild', label: 'Fat capacity build cost', min: 0, max: 0.2, step: 0.005, hint: 'Extra fat locked into a new cell per unit of fat capacity. Applies to births from now on.' },
+  { key: 'stiffBuild', label: 'Stiffness build cost', min: 0, max: 0.5, step: 0.01, hint: 'Extra fat locked into a new cell per unit of the stiffness gene. Applies to births from now on.' },
+  { key: 'strengthBuild', label: 'Bond strength build cost', min: 0, max: 0.5, step: 0.01, hint: 'Extra fat locked into a new cell per unit of the bond strength gene. Applies to births from now on.' },
+  { key: 'permBuild', label: 'Permeability build cost', min: 0, max: 0.5, step: 0.01, hint: 'Extra fat locked into a new cell per unit of the permeability gene. Applies to births from now on.' },
   { key: 'minMutation', label: 'Min mutation factor', min: 0, max: 0.05, step: 0.001, hint: 'Lowest mutation factor a new organism can inherit, so evolution cannot freeze. Applies to births from now on.' },
   { key: 'speciesThreshold', label: 'Species threshold', min: 0.02, max: 1, step: 0.01, hint: 'How far a detached daughter must drift from its species representative to found a new species. Labels only, no effect on the simulation. Applies to births from now on.' },
   { key: 'drift', label: 'Drift', min: 0, max: 0.006, step: 0.0001, hint: 'Largest random nudge to a cell per tick. Higher spreads cells faster. Moves cells only, not water contents.' },
   { key: 'vitalRise', label: 'Vital rise', min: 0, max: 0.02, step: 0.0005, hardMax: 1, hint: 'Fraction of vital moving up one square per tick. Higher leaves less vital in the depths.' },
   { key: 'spentSink', label: 'Spent sink', min: 0, max: 0.02, step: 0.0005, hardMax: 1, hint: 'Fraction of spent moving down one square per tick. Higher leaves less spent at the surface, where cells need it.' },
   { key: 'airExchange', label: 'Air exchange', min: 0, max: 0.2, step: 0.005, hardMax: 1, hint: 'Fraction of the difference between surface water and air closed per tick. Higher resupplies the shallows faster.' },
-  { key: 'divideCost', label: 'Division fat cost', min: 0, max: 0.6, step: 0.01, hardMax: 0.69, hint: 'Fat burned at each division, on top of the fat locked into the new cell. Higher makes dividing early less rewarding.' },
+  { key: 'divideCost', label: 'Division fat cost', min: 0, max: 0.6, step: 0.01, hint: 'Fat burned at each division, on top of the fat locked into the new cell. Higher makes dividing early less rewarding.' },
   { key: 'deathDetritus', label: 'Corpse to detritus', min: 0, max: 1, step: 0.01, hardMax: 1, hint: 'Fraction of a dead cell left as detritus. The rest becomes spent at once.' },
-  { key: 'detritusSink', label: 'Detritus sink', min: 0, max: 0.5, step: 0.005, hardMax: 1, hint: 'Fraction of detritus moving down one square per tick, on its way to becoming sediment.' },
+  { key: 'detritusSink', label: 'Detritus sink', min: 0, max: 0.1, step: 0.001, hardMax: 1, hint: 'Fraction of detritus moving down one square per tick, on its way to the floor. Lower keeps it in the water longer.' },
+  { key: 'detritusBury', label: 'Detritus burial', min: 0, max: 0.002, step: 0.00005, hardMax: 1, hint: 'Fraction of the detritus layer on the floor turning into sediment per tick. Lower keeps the layer around longer as food for digesters.' },
+  { key: 'detritusDiffusion', label: 'Detritus spread', min: 0, max: 0.05, step: 0.001, hardMax: 0.24, hint: 'How fast detritus spreads to neighboring squares. Higher makes the floor layer thicker and more of a haze; lower keeps it thin and close to the floor.' },
   { key: 'detritusDecay', label: 'Detritus decay', min: 0, max: 0.01, step: 0.0001, hardMax: 1, hint: 'Fraction of detritus rotting into spent per tick, using up vital. Lower keeps more matter locked up as dead material.' },
   { key: 'sedimentDecay', label: 'Sediment decay', min: 0, max: 0.002, step: 0.00005, hardMax: 1, hint: 'Fraction of floor sediment returning to the water as spent per tick. Lower traps more matter on the floor.' },
   { key: 'wearDivide', label: 'Division wear', min: 0, max: 2000, step: 10, hint: 'Wear added to the parent at each division. Time adds only 1 wear per tick, so this usually drives aging. New cells start at 0.' },
   { key: 'wearHalf', label: 'Wear half-output', min: 1000, max: 30000, step: 500, hardMin: 1, hint: 'Wear at which a cell makes fat at half speed. Higher means slower aging.' },
-  { key: 'minThresh', label: 'Min fat threshold', min: 1, max: 5, step: 0.1, hardMin: 1, hint: 'Lowest fat threshold and fat capacity a new organism can inherit. Applies to births from now on.' },
+  { key: 'minThresh', label: 'Min fat threshold', min: 1, max: 5, step: 0.1, hint: 'Lowest fat threshold and fat capacity a new organism can inherit. Applies to births from now on.' },
   { key: 'repel', label: 'Repulsion scale', min: 0, max: 0.03, step: 0.0005, hint: 'How hard overlapping cells push apart at stiffness 1. Multiplied by the pair\'s mean stiffness gene.' },
   { key: 'contactDist', label: 'Contact distance', min: 0.1, max: 0.95, step: 0.01, hardMax: 0.99, hint: 'Cells closer than this push apart, in squares. Effectively cell size for crowding. Bonds rest at 0.4, so going below that changes how bonded cells sit.' },
   { key: 'bondStiffness', label: 'Bond stiffness scale', min: 0, max: 0.05, step: 0.001, hint: 'Spring force of a bond at stiffness 1. Multiplied by the mean stiffness gene of its two cells.' },

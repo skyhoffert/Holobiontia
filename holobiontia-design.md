@@ -2,7 +2,7 @@
 
 *An evolution simulator. The name means "the kingdom of holobionts": a holobiont is a host plus all the symbionts living in it, treated as one unit.*
 
-*Living document for planning only; implementation comes later. Last updated: 2026-11-06.*
+*Living document. Current progress is under section 16. Last updated: 2026-11-06.*
 
 Everything in this document is decided unless marked **Proposed** or listed under Open Questions.
 
@@ -51,7 +51,7 @@ Water contents are **concentrations on a coarse grid**, not particles.
 |---|---|---|
 | Vital | Matter | Rises slightly |
 | Spent | Matter | Sinks slowly. Input for photosynthesis. |
-| Detritus | Matter | Sinks faster. Settles into floor sediment. |
+| Detritus | Matter | Sinks faster. Collects in a layer on the floor, which slowly becomes sediment. |
 | Vent chemical | Energy | Emitted at vents, diffuses, fades |
 | Light | Energy | Recomputed every tick (see 2.2) |
 | Metabolic scent | Signal | Passive, fast decay (see 6.3) |
@@ -70,13 +70,15 @@ Water contents are **concentrations on a coarse grid**, not particles.
 - **Sloped/varied terrain**, stored as a **heightmap** (one height per column). Creates habitats from sunlit shallows to dark depths.
 - **Basin shape:** each side rises in **stepped slopes** with flat shelves at several depths, different on each side, to a sloping mountain above the water surface, ending in a little flat land before the edge.
 - **Out of water:** cells can cross the surface and rest on land. There is no energy or other resource there, so upkeep burns stored fat and a cell starves at zero, as anywhere else. Gravity pulls cells back down. Matter released out of water runs off to the nearest shore.
-- **Sediment:** each column stores detritus that lands on it; it slowly breaks down into spent in the deepest water above it, using vital where available (1 sediment + 1 vital → 2 spent, else 1 sediment → 1 spent), so the floor can't trap matter for good.
+- **Detritus layer:** detritus reaching the deepest water square of a column stays there as a layer, still edible and still rotting, until it is slowly buried as sediment.
+- **Sediment:** each column stores buried detritus; it slowly breaks down into spent in the deepest water above it, using vital where available (1 sediment + 1 vital → 2 spent, else 1 sediment → 1 spent), so the floor can't trap matter for good.
 - **Vents:** a few fixed points that
   - emit the **vent chemical** (second energy source, used by chemosynthesis);
   - create a **rising plume** that carries spent upward — upwelling.
 - **Anchoring:** cells can bond to the floor (governed by stickiness); anchor bonds break like any other.
 - **The matter trap** this solves: without a return path, sinking matter accumulates on the floor and the surface starves.
-- **Future floor interaction** (cheap thanks to the heightmap), in rough order of cost: eating sediment; **reef building** (dead high-stiffness cells become floor height); digging/burrowing.
+- **Roots** (Milestone 2): an anchored cell with sediment digestion draws fat from its column's sediment. Sediment is dead matter, not a separate nutrient. With directional fat flow, root cells can pass fat up to cells in the light, so rooted plants can emerge.
+- **Future floor interaction** (cheap thanks to the heightmap), in rough order of cost: **reef building** (dead high-stiffness cells become floor height); digging/burrowing.
 
 ---
 
@@ -98,8 +100,8 @@ Reactions (unit counts are conserved):
 - **Photosynthesis:** 2 spent + light → 1 fat + 1 vital
 - **Chemosynthesis:** 2 spent + vent chemical → 1 fat + 1 vital *(Proposed: same form as photosynthesis)*
 - **Respiration:** 1 fat + 1 vital → 2 spent + energy (used immediately)
-- **Building:** a trait's build cost converts fat into **biomass** (1 fat → 1 biomass), locked in the cell's body. Until trait costs exist, every cell locks the same fixed amount, paid by the parent at division. This also means a starved cell, at zero fat, still leaves a corpse.
-- **Digestion:** biomass or detritus + energy → part becomes fat; the undigested remainder is released as **detritus (poop)**.
+- **Building:** a trait's build cost converts fat into **biomass** (1 fat → 1 biomass), locked in the cell's body. A new cell's biomass is a base amount plus a build cost per unit of each body trait, paid by the parent at division. A parent that can't afford a daughter doesn't divide. A starved cell, at zero fat, still leaves a corpse.
+- **Digestion:** biomass or detritus + energy → part becomes fat; the undigested remainder is released as **detritus (poop)**. Detritus digested from a cell's own square (Milestone 1) just removes the part that becomes fat, since the remainder would land back in the same square. Energy is paid by respiring extra fat.
 - **Death:** much of the body's biomass and fat decays straight into spent; the rest becomes detritus.
 - **Decay:** 1 detritus + 1 vital → 2 spent (slow, ambient). Heavy decay uses up vital, creating **low-vital dead zones**, as in real oceans.
 - **Limiting factor:** production = trait factor × local light (or vent chemical), capped by available spent.
@@ -128,6 +130,7 @@ Because bodies lock up matter as biomass, **total matter limits how much life ca
 | Trait | Effect | Cost tier | Milestone |
 |---|---|---|---|
 | Photosynthesis | Makes fat from light; absorbs light (shade) | Moderate | 1 |
+| Digestion: detritus | Makes fat from detritus in its square | Moderate | 1 |
 | Fat capacity | How much fat the cell can store | Cheap | 1 |
 | Stiffness | Bond springiness and collision firmness; raises density | Cheap | 1 |
 | Bond strength (adhesion) | How hard bonds are to break | Cheap–moderate | 1 |
@@ -136,16 +139,17 @@ Because bodies lock up matter as biomass, **total matter limits how much life ca
 | Hormone outflow, hormone inflow (bond target) | Directional hormone flow (section 5.1) | Cheap | 2 |
 | Bending stiffness | Resists bond-angle changes | **Expensive** | 2 |
 | Chemosynthesis | Makes fat from vent chemical | Moderate | 2 |
+| Digestion: sediment | Anchored cells make fat from their column's sediment | Moderate | 2 |
 | Stickiness | Forming new bonds on contact | Moderate | 2 (own) / 4 (foreign) |
 | Contractility | Muscle: shortens bonds when signaled | Moderate | 3 |
 | Conductance: signal outflow, signal inflow (bond target) | Directional signal transmission (section 5.1) | Moderate | 3 |
 | Sensitivities | One per sense (see 6.3) | Moderate–expensive | 3 |
 | Susceptibility | How easily strangers can grab this cell (low = defended, costs upkeep) | Moderate | 4 |
-| Digestion (per food type) | Breaks down living tissue, detritus, sediment into fat | Moderate | 4 |
+| Digestion: living tissue | Breaks down captured cells into fat | Moderate | 4 |
 | Scent emission ×4 | Signature scent channels | Expensive | 4 |
 
 - Every trait has a **build cost** (fat → biomass, once) and an **upkeep cost** (fat, every tick), tunable per trait.
-- Each cell has a **total trait capacity**: investing in one trait means giving up others.
+- Each cell has a **total trait capacity**: investing in one trait means giving up others. Trait load is measured in build cost. A new organism over capacity has all its body traits shrunk in proportion. Fat capacity counts only above its evolvable minimum.
 - Every cell pays a base upkeep just to exist; this is the base unit for balancing (section 11).
 
 ### 4.2 Buoyancy
@@ -451,12 +455,17 @@ Each milestone must run, and be interesting to watch, on its own before the next
 
 | Milestone | Theme | Adds |
 |---|---|---|
-| **1** | The dividing cell | Grid (vital, spent, detritus), light + shading, simple floor heightmap with sediment, cells (photosynthesis, fat, biomass, stiffness, strength, permeability), decay, buoyancy, wear and death, division/detach/daughter share, numeric mutation with mutation factor, springs and soft collisions, LUCA, heatmaps, sliders, determinism. Genome sets traits directly; all cells in an organism are identical. |
-| **2** | Bodies | Gene-regulation network and structural genome growth, innovation IDs, hormones, directional fat and hormone transfer, contact bonding, bending stiffness, fragmentation, sloped terrain, vents and chemosynthesis, anchoring, species display |
+| **1** | The dividing cell | Grid (vital, spent, detritus), light + shading, simple floor heightmap with sediment, cells (photosynthesis, fat, biomass, stiffness, strength, permeability), decay, buoyancy, wear and death, division/detach/daughter share, numeric mutation with mutation factor, springs and soft collisions, detritus digestion, LUCA, heatmaps, sliders, determinism. Genome sets traits directly; all cells in an organism are identical. |
+| **2** | Bodies | Gene-regulation network and structural genome growth, innovation IDs, hormones, directional fat and hormone transfer, contact bonding, bending stiffness, fragmentation, sloped terrain, vents and chemosynthesis, anchoring, sediment digestion and roots, species display |
 | **3** | Movement and senses | Signal network, directional conductance, contractility, drag paddles, local senses, change sensing |
-| **4** | Ecology | Foreign bonding, predation by tearing and draining, digestion traits (diets), guts, metabolic and signature scents |
+| **4** | Ecology | Foreign bonding, predation by tearing and draining, living-tissue digestion (diets), guts, metabolic and signature scents |
 | **5** | Symbiosis | Inherited partnerships via fragmentation; tuning toward stable symbioses |
 | **Later** | | Logging, nudging tools beyond sliders, sound, sight, meiosis, reef building, digging, test tank, saved organisms, 3D |
+
+### Status
+- **Milestone 1: features built, not yet signed off.** It still has to be interesting to watch. A long run needs to show populations levelling off and digesters evolving, so the ecological loop closes. Balance so far comes from hand calculation and short experiments.
+- **Built ahead of schedule:** sloped terrain and species display (Milestone 2); save and load of whole runs (section 14.2).
+- **Next:** tune Milestone 1 from long runs, then start Milestone 2 with the gene-regulation network.
 
 ---
 
@@ -466,6 +475,7 @@ Each milestone must run, and be interesting to watch, on its own before the next
 2. **Scale targets** — world size and typical cell count.
 3. **Visual style** of the world rendering.
 4. **Per-hormone transfer factors** — all hormones share one outflow and inflow pair for now, so two hormones can't flow opposite ways across the same bond. Give each hormone its own pair if that limit matters in practice.
+5. **Compensation depth** — section 11 suggests about the top third of the world, but the current low upkeep (chosen to reduce aging) lets an unshaded LUCA-like cell feed itself down to the light cutoff, leaving shading as the main depth limit. Decide whether that's acceptable once long runs show its effect.
 
 New questions will surface during implementation; add them here.
 
