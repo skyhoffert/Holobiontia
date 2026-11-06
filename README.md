@@ -11,7 +11,7 @@ npm test
 
 ## Layout
 - `src/sim/` no DOM. `world.js` rules, `worker.js` loop + messages, `config.js` constants + sliders, `rng.js` PRNG.
-- `src/ui/` no sim rules. `main.js` wiring, `view.js` world canvas, `graph.js`, `inspector.js`, `legend.js`, `organisms.js`.
+- `src/ui/` no sim rules. `main.js` wiring, `view.js` world canvas, `graph.js`, `inspector.js`, `legend.js`, `organisms.js`, `species.js`, `resize.js`.
 - `test/` Node tests of sim invariants.
 
 ## Rules

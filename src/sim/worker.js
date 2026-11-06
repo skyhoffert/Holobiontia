@@ -1,6 +1,6 @@
 // Drives the sim. Wall-clock timing lives here only, never in world.js.
 import { DEFAULTS } from './config.js';
-import { createWorld, stepWorld, totalMatter } from './world.js';
+import { createWorld, loadWorld, saveWorld, stepWorld, totalMatter } from './world.js';
 
 const FRAME_MS = 33;
 const MAX_TICKS_PER_FRAME = 50;
@@ -21,6 +21,14 @@ const handlers = {
     world = createWorld(cfg);
     playing = false;
   },
+  save() {
+    self.postMessage({ saved: JSON.stringify(saveWorld(world)), seed: cfg.seed, tick: world.tick });
+  },
+  load({ data }) {
+    Object.assign(cfg, DEFAULTS, data.cfg); // settings added since the save take their defaults
+    world = loadWorld(data, cfg);
+    playing = false;
+  },
 };
 
 self.onmessage = ({ data }) => {
@@ -39,6 +47,7 @@ function post() {
     tick,
     n,
     playing,
+    cfg,
     gridW: cfg.gridW,
     gridH: cfg.gridH,
     skyRows: cfg.skyRows,
@@ -63,6 +72,12 @@ function post() {
     sediment: world.sediment.slice(),
     bondA: world.bondA.slice(0, world.nBonds),
     bondB: world.bondB.slice(0, world.nBonds),
+    // Living species only: the full list grows for the whole run.
+    speciesInfo: [...new Set(cells.species.subarray(0, n))].map((id) => ({
+      id,
+      parent: world.species[id].parent,
+      born: world.species[id].born,
+    })),
   };
   const buffers = [
     ...Object.values(snapshot.cells),

@@ -1,3 +1,4 @@
+import { traitLoad } from '../sim/config.js';
 import { membersOf } from './organisms.js';
 
 const row = (label, value) => `<dt>${label}</dt><dd>${value}</dd>`;
@@ -22,18 +23,33 @@ function organismStats(snap, i) {
 
 function cellStats(snap, i) {
   const c = snap.cells;
+  const load = traitLoad(snap.cfg, {
+    photo: c.photo[i],
+    cap: c.cap[i],
+    stiff: c.stiff[i],
+    strength: c.strength[i],
+    perm: c.perm[i],
+    digest: c.digest[i],
+  });
   return [
     section('Cell'),
     row('Id', c.id[i]),
+    row('Species', `#${c.species[i]}`),
     row('Age', snap.tick - c.born[i]),
     row('Fat', c.fat[i].toFixed(3)),
+    row('Biomass', c.biomass[i].toFixed(3)),
     row('Wear', c.wear[i]),
     row('Photosynthesis', c.photo[i].toFixed(3)),
+    row('Digestion', c.digest[i].toFixed(3)),
     row('Fat threshold', c.thresh[i].toFixed(3)),
     row('Detach chance', c.detach[i].toFixed(3)),
     row('Split chance', c.split[i].toFixed(3)),
     row('Daughter share', c.share[i].toFixed(3)),
     row('Fat capacity', c.cap[i].toFixed(3)),
+    row('Stiffness', c.stiff[i].toFixed(3)),
+    row('Bond strength', c.strength[i].toFixed(3)),
+    row('Permeability', c.perm[i].toFixed(3)),
+    row('Capacity used', `${((load / snap.cfg.traitCapacity) * 100).toFixed(0)}%`),
     row('Mutation factor', c.mut[i].toFixed(4)),
   ].join('');
 }

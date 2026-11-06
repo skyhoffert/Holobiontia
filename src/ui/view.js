@@ -4,7 +4,7 @@ export const OVERLAYS = {
   light: { tint: [90, 170, 230], max: 2, gamma: 0.5 }, // gamma keeps dim light under canopies visible
   vital: { tint: [120, 220, 200], max: 3, gamma: 1 },
   spent: { tint: [210, 150, 90], max: 4, gamma: 1 },
-  detritus: { tint: [190, 160, 110], max: 0.3, gamma: 0.5 }, // gamma keeps thin marine snow visible
+  detritus: { tint: [190, 160, 110], max: 2, gamma: 0.5 }, // gamma keeps thin marine snow visible beside the dense floor layer
 };
 export const WATER = [12, 22, 32];
 const SKY = '#25313c';
@@ -25,7 +25,11 @@ function skyColor({ skyLevels }, overlay) {
 }
 
 const cellRadius = (fat) => 0.12 + 0.12 * Math.sqrt(Math.max(fat, 0));
-const cellColor = (photo) => `hsl(115 ${25 + 70 * Math.sqrt(photo)}% ${40 + 30 * Math.sqrt(photo)}%)`;
+// Green for photosynthesis, shifting to brown as digestion grows.
+function cellColor(photo, digest) {
+  const strength = Math.sqrt(Math.max(photo, digest));
+  return `hsl(${115 - 85 * Math.sqrt(digest)} ${25 + 70 * strength}% ${40 + 30 * strength}%)`;
+}
 
 const MAX_ZOOM = 30;
 const WHEEL_SPEED = 0.0015;
@@ -169,7 +173,7 @@ export function createView(canvas, onTap) {
     drawTerrain(snap);
     drawSediment(snap);
 
-    const { x, y, fat, photo, id } = snap.cells;
+    const { x, y, fat, photo, digest } = snap.cells;
 
     ctx.strokeStyle = BOND;
     ctx.lineWidth = 0.08;
@@ -181,7 +185,7 @@ export function createView(canvas, onTap) {
     ctx.stroke();
 
     for (let i = 0; i < snap.n; i++) {
-      ctx.fillStyle = cellColor(photo[i]);
+      ctx.fillStyle = cellColor(photo[i], digest[i]);
       ctx.beginPath();
       ctx.arc(x[i], y[i], cellRadius(fat[i]), 0, Math.PI * 2);
       ctx.fill();
