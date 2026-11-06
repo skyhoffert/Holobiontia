@@ -16,13 +16,18 @@
     <label>Speed <input id="speed" type="range" min="1" max="500" value="60"> <output id="speed-out"></output></label>
     <label>Seed <input id="seed" type="number" value="1"></label>
     <button id="reset">New world</button>
+    <button id="save" title="Download this world and its settings as a file">Save</button>
+    <button id="load" title="Continue from a saved file. Replaces the current world.">Load</button>
+    <input id="load-file" type="file" accept=".json" hidden>
     <button id="largest" title="Zoom to the largest organism">Largest</button>
     <span id="stats"></span>
   </header>
 
   <aside id="left">
     <h2>World</h2>
+    <p class="knob-note">Type any value in a box. Double-click a name to reset it.</p>
     <div id="knobs"></div>
+    <button id="copy-settings" title="Copy seed and slider values to the clipboard">Copy settings</button>
     <h2>Overlay</h2>
     <select id="overlay">
       <option value="light">Light</option>
@@ -41,6 +46,14 @@
     <dl id="inspector"></dl>
   </aside>
 
-  <footer id="bottom"><canvas id="graph-canvas"></canvas></footer>
+  <footer id="bottom">
+    <canvas id="graph-canvas" title="Each line is scaled to its own max"></canvas>
+    <section id="species"></section>
+    <div id="resize-graph" class="resize resize-x"></div>
+  </footer>
+
+  <div id="resize-left" class="resize resize-x"></div>
+  <div id="resize-right" class="resize resize-x"></div>
+  <div id="resize-bottom" class="resize resize-y"></div>
 </body>
 </html>

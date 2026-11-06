@@ -25,6 +25,7 @@ function cellStats(snap, i) {
   return [
     section('Cell'),
     row('Id', c.id[i]),
+    row('Species', `#${c.species[i]}`),
     row('Age', snap.tick - c.born[i]),
     row('Fat', c.fat[i].toFixed(3)),
     row('Wear', c.wear[i]),
@@ -34,6 +35,9 @@ function cellStats(snap, i) {
     row('Split chance', c.split[i].toFixed(3)),
     row('Daughter share', c.share[i].toFixed(3)),
     row('Fat capacity', c.cap[i].toFixed(3)),
+    row('Stiffness', c.stiff[i].toFixed(3)),
+    row('Bond strength', c.strength[i].toFixed(3)),
+    row('Permeability', c.perm[i].toFixed(3)),
     row('Mutation factor', c.mut[i].toFixed(4)),
   ].join('');
 }

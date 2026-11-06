@@ -1,8 +1,9 @@
+import { GENE_SCALE, SAVE_VERSION, geneDistance } from './config.js';
 import { createRng } from './rng.js';
 import { createTerrain, isOpen } from './terrain.js';
 
-const GENE_KEYS = ['photo', 'thresh', 'detach', 'split', 'share', 'cap', 'mut'];
-const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'wear', 'id', 'born', ...GENE_KEYS];
+const GENE_KEYS = Object.keys(GENE_SCALE);
+const CELL_KEYS = ['x', 'y', 'vx', 'vy', 'fat', 'wear', 'id', 'born', 'species', ...GENE_KEYS];
 const NEIGHBORS = [[1, 0], [-1, 1], [0, 1], [1, 1]];
 
 export function createWorld(cfg) {
@@ -36,16 +37,23 @@ export function createWorld(cfg) {
     bondA: new Int32Array(cfg.cap * 2),
     bondB: new Int32Array(cfg.cap * 2),
     remap: new Int32Array(cfg.cap),
+    // Display only: no rule reads species. Index is the species id.
+    species: [],
   };
-  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, {
+  const luca = {
     photo: cfg.lucaPhoto,
     thresh: cfg.lucaThresh,
     detach: cfg.lucaDetach,
     split: cfg.lucaSplit,
     share: cfg.lucaShare,
     cap: cfg.lucaCap,
+    stiff: cfg.lucaStiff,
+    strength: cfg.lucaStrength,
+    perm: cfg.lucaPerm,
     mut: cfg.lucaMut,
-  });
+  };
+  w.species.push({ genes: luca, parent: -1, born: 0 });
+  spawn(w, cfg.gridW / 2, 1, cfg.lucaFat, luca, 0);
   w.matter0 = totalMatter(w);
   computeLight(w);
   return w;
@@ -60,10 +68,53 @@ export function stepWorld(w) {
   exchangeAir(w, 'spent');
   stepDetritus(w);
   stepSediment(w);
+  driftField(w, w.vital, -w.cfg.vitalRise);
+  driftField(w, w.spent, w.cfg.spentSink);
   diffuse(w, w.vital, w.cfg.diffusion);
   diffuse(w, w.spent, w.cfg.diffusion);
   diffuse(w, w.detritus, w.cfg.detritusDiffusion);
   w.tick++;
+}
+
+const FIELD_KEYS = ['vital', 'spent', 'detritus', 'sediment'];
+
+// Everything a run needs to continue identically, as plain JSON-safe data. Light, shade and the
+// neighbor lookups are rebuilt each tick, so they aren't saved.
+export function saveWorld(w) {
+  return {
+    version: SAVE_VERSION,
+    cfg: w.cfg,
+    tick: w.tick,
+    n: w.n,
+    nextId: w.nextId,
+    rng: w.rand.state(),
+    matter0: w.matter0,
+    air: w.air,
+    species: w.species,
+    cells: Object.fromEntries(CELL_KEYS.map((k) => [k, Array.from(w.cells[k].subarray(0, w.n))])),
+    fields: Object.fromEntries(FIELD_KEYS.map((k) => [k, Array.from(w[k])])),
+    bondA: Array.from(w.bondA.subarray(0, w.nBonds)),
+    bondB: Array.from(w.bondB.subarray(0, w.nBonds)),
+  };
+}
+
+// cfg becomes the world's live config, so it should already include data.cfg.
+export function loadWorld(data, cfg) {
+  const w = createWorld(cfg);
+  w.tick = data.tick;
+  w.n = data.n;
+  w.nextId = data.nextId;
+  w.rand = createRng(data.rng);
+  w.matter0 = data.matter0;
+  w.air = { ...data.air };
+  w.species = data.species;
+  for (const k of CELL_KEYS) w.cells[k].set(data.cells[k]);
+  for (const k of FIELD_KEYS) w[k].set(data.fields[k]);
+  w.nBonds = data.bondA.length;
+  w.bondA.set(data.bondA);
+  w.bondB.set(data.bondB);
+  computeLight(w);
+  return w;
 }
 
 // Conservation invariant: must stay equal to w.matter0.
@@ -75,7 +126,7 @@ export function totalMatter(w) {
   return sum;
 }
 
-function spawn(w, x, y, fat, genes) {
+function spawn(w, x, y, fat, genes, species) {
   const c = w.cells;
   const i = w.n++;
   c.x[i] = x;
@@ -87,6 +138,7 @@ function spawn(w, x, y, fat, genes) {
   c.wear[i] = 0;
   c.id[i] = w.nextId++;
   c.born[i] = w.tick;
+  c.species[i] = species;
 }
 
 const square = (w, i) =>
@@ -120,8 +172,15 @@ function computeLight(w) {
 // Aging never kills directly: output falls until a cell can't feed itself.
 const efficiency = (w, i) => 1 / (1 + w.cells.wear[i] / w.cfg.wearHalf);
 
-const upkeepCost = (w, i) =>
-  w.cfg.upkeep * (1 + w.cfg.photoUpkeep * w.cells.photo[i] + w.cfg.capUpkeep * w.cells.cap[i]);
+function upkeepCost(w, i) {
+  const { cells: c, cfg } = w;
+  return cfg.upkeep * (1
+    + cfg.photoUpkeep * c.photo[i]
+    + cfg.capUpkeep * c.cap[i]
+    + cfg.stiffUpkeep * c.stiff[i]
+    + cfg.strengthUpkeep * c.strength[i]
+    + cfg.permUpkeep * c.perm[i]);
+}
 
 function stepCells(w) {
   const count = w.n; // daughters born this tick act next tick
@@ -208,17 +267,27 @@ function kill(w, i) {
 // A new organism's genes: each is nudged by an amount set by the parent's mutation factor.
 function mutatedGenes(w, i) {
   const { cells: c, cfg, rand } = w;
-  const nudge = (key, scale, min, max) =>
-    Math.min(max, Math.max(min, c[key][i] + (rand() + rand() - 1) * c.mut[i] * scale));
+  const nudge = (key, min, max) =>
+    Math.min(max, Math.max(min, c[key][i] + (rand() + rand() - 1) * c.mut[i] * GENE_SCALE[key]));
   return {
-    photo: nudge('photo', 1, 0, 1),
-    thresh: nudge('thresh', 10, cfg.minThresh, Infinity),
-    detach: nudge('detach', 5, 0, 1),
-    split: nudge('split', 1, 0, 1),
-    share: nudge('share', 2, 0, 1),
-    cap: nudge('cap', 10, cfg.minThresh, Infinity),
-    mut: nudge('mut', 0.25, cfg.minMutation, Infinity),
+    photo: nudge('photo', 0, 1),
+    thresh: nudge('thresh', cfg.minThresh, Infinity),
+    detach: nudge('detach', 0, 1),
+    split: nudge('split', 0, 1),
+    share: nudge('share', 0, 1),
+    cap: nudge('cap', cfg.minThresh, Infinity),
+    stiff: nudge('stiff', 0, cfg.maxTrait),
+    strength: nudge('strength', 0, cfg.maxTrait),
+    perm: nudge('perm', 0, cfg.maxTrait),
+    mut: nudge('mut', cfg.minMutation, Infinity),
   };
+}
+
+// NEAT-style: join the parent's species if close to its representative, else found a new one.
+function assignSpecies(w, parent, genes) {
+  if (geneDistance(genes, w.species[parent].genes) < w.cfg.speciesThreshold) return parent;
+  w.species.push({ genes, parent, born: w.tick });
+  return w.species.length - 1;
 }
 
 function divide(w, i) {
@@ -232,10 +301,11 @@ function divide(w, i) {
   const detached = rand() < c.detach[i] || w.nBonds >= w.bondA.length;
   if (detached) {
     // A new organism: mutation happens only here.
-    spawn(w, c.x[i], c.y[i], share, mutatedGenes(w, i));
+    const genes = mutatedGenes(w, i);
+    spawn(w, c.x[i], c.y[i], share, genes, assignSpecies(w, c.species[i], genes));
   } else {
     // Same organism: identical genes, joined by a bond.
-    spawn(w, c.x[i], c.y[i], share, Object.fromEntries(GENE_KEYS.map((k) => [k, c[k][i]])));
+    spawn(w, c.x[i], c.y[i], share, Object.fromEntries(GENE_KEYS.map((k) => [k, c[k][i]])), c.species[i]);
     w.bondA[w.nBonds] = i;
     w.bondB[w.nBonds] = d;
     w.nBonds++;
@@ -250,11 +320,12 @@ function divide(w, i) {
   c.vy[i] -= kickY;
 }
 
-// Water pushes back against gravity; fatter cells are less dense and rise. Air doesn't.
+// Water pushes back against gravity. Fat lowers density, stiffness above 1 raises it. Air doesn't.
 function buoyancy(w, i) {
   if (isDry(w, i)) return 0;
-  const { gravity, fatLift, neutralFat } = w.cfg;
-  return gravity * (1 + fatLift * (w.cells.fat[i] - neutralFat));
+  const { gravity, fatLift, neutralFat, stiffDensity } = w.cfg;
+  const { fat, stiff } = w.cells;
+  return gravity * (1 + fatLift * (fat[i] - neutralFat) - stiffDensity * (stiff[i] - 1));
 }
 
 // Velocity: damped, nudged at random, pulled by gravity less buoyancy.
@@ -273,8 +344,11 @@ function move(w, i) {
   else c.vy[i] = 0;
 }
 
+const mean = (values, a, b) => (values[a] + values[b]) / 2;
+
 // Bonds: a spring toward bondRest that balances repulsion, passive fat flow from fuller
-// to emptier, and a snap past bondBreak. Fat updates in turn, so it can't go negative.
+// to emptier, and a snap past the break distance. Each bond averages its cells' genes.
+// Fat updates in turn, so it can't go negative.
 function stepBonds(w) {
   const { cells: c, cfg, bondA, bondB } = w;
   const { bondStiffness, bondRest, bondBreak, fatFlow } = cfg;
@@ -285,17 +359,17 @@ function stepBonds(w) {
     const dx = c.x[b] - c.x[a];
     const dy = c.y[b] - c.y[a];
     const d = Math.hypot(dx, dy);
-    if (d > bondBreak) continue;
+    if (d > bondBreak * mean(c.strength, a, b)) continue;
 
     if (d > 0) {
-      const f = (bondStiffness * (d - bondRest)) / d;
+      const f = (bondStiffness * mean(c.stiff, a, b) * (d - bondRest)) / d;
       c.vx[a] += f * dx;
       c.vy[a] += f * dy;
       c.vx[b] -= f * dx;
       c.vy[b] -= f * dy;
     }
 
-    const flow = fatFlow * (c.fat[a] - c.fat[b]);
+    const flow = fatFlow * mean(c.perm, a, b) * (c.fat[a] - c.fat[b]);
     c.fat[a] -= flow;
     c.fat[b] += flow;
 
@@ -306,11 +380,12 @@ function stepBonds(w) {
   w.nBonds = kept;
 }
 
-// Soft collisions: overlapping cells push apart, equal and opposite. Each pair is visited
-// once, via its own square and the four "later" neighbors. contactDist must be < 1 square.
+// Soft collisions: overlapping cells push apart, equal and opposite, as firmly as their mean
+// stiffness. Each pair is visited once, via its own square and the four "later" neighbors.
+// contactDist must be < 1 square.
 function repelCells(w) {
   const { cells: c, cfg, bucketHead: head, bucketNext: next } = w;
-  const { gridW: W, gridH: H, skyRows, contactDist, repel: strength } = cfg;
+  const { gridW: W, gridH: H, skyRows, contactDist, repel } = cfg;
   const rows = H + skyRows;
 
   head.fill(-1);
@@ -327,7 +402,7 @@ function repelCells(w) {
     const d2 = dx * dx + dy * dy;
     if (d2 >= contactDist * contactDist || d2 === 0) return;
     const d = Math.sqrt(d2);
-    const f = (strength * (1 - d / contactDist)) / d;
+    const f = (repel * mean(c.stiff, i, j) * (1 - d / contactDist)) / d;
     c.vx[i] -= f * dx;
     c.vy[i] -= f * dy;
     c.vx[j] += f * dx;
@@ -420,6 +495,23 @@ function stepSediment(w) {
     const amount = w.cfg.sedimentDecay * sediment[x];
     sediment[x] -= amount;
     toSpent(w, bottom[x], amount);
+  }
+}
+
+// Vertical drift between water squares only: rate > 0 sinks, rate < 0 rises. Each square loses
+// a fraction of its own contents, so with |rate| <= 1 it can't go negative.
+function driftField(w, f, rate) {
+  const { gridW: W, gridH: H } = w.cfg;
+  const { water } = w.terrain;
+  w.tmp.set(f);
+  for (let y = 0; y < H - 1; y++) {
+    for (let x = 0; x < W; x++) {
+      const s = y * W + x;
+      if (!water[s] || !water[s + W]) continue;
+      const flux = rate * (rate > 0 ? w.tmp[s] : w.tmp[s + W]);
+      f[s] -= flux;
+      f[s + W] += flux;
+    }
   }
 }
 
